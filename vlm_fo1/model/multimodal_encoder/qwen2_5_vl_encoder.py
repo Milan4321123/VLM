@@ -6,6 +6,15 @@ from vlm_fo1.model.multimodal_encoder.qwen2_5_vl.modeling_qwen2_5_vl import Qwen
 from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
 from torchvision.transforms import ToPILImage
 
+
+def _vision_tower_dtype():
+    if not torch.cuda.is_available():
+        return torch.float32
+    if torch.cuda.is_bf16_supported():
+        return torch.bfloat16
+    return torch.float16
+
+
 class VisionFeaturesGather:
     """
     Collects and manages intermediate features for multi-level visual representation extraction
@@ -205,7 +214,12 @@ class Qwen2_5_VlVisionTower(nn.Module):
         Actually load Qwen2.5 Vision Tower backbone and processor.
         Sets up the image tower and patch feed pipeline.
         """
-        self.image_tower = Qwen2_5_VisionTransformerPretrainedModel._from_config(self.cfg_only, attn_implementation="flash_attention_2", torch_dtype=torch.bfloat16)
+        # SDPA works on standard Colab GPUs without the optional flash-attn package.
+        self.image_tower = Qwen2_5_VisionTransformerPretrainedModel._from_config(
+            self.cfg_only,
+            attn_implementation="sdpa",
+            torch_dtype=_vision_tower_dtype(),
+        )
         # print(f'Qwen2_5_VlVisionTower loading_info: {loading_info}')
 
         if model_path is not None:
