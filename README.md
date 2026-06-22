@@ -116,6 +116,41 @@ conda activate vlm-fo1
 pip install -r requirements.txt
 ```
 
+### Google Colab (free GPU)
+
+1. In Colab, select **Runtime > Change runtime type > T4 GPU**.
+2. Run the following cells:
+
+```python
+!git clone --depth 1 --branch codex/colab-inference https://github.com/Milan4321123/VLM.git /content/VLM
+%cd /content/VLM
+!pip install -q -r requirements-colab.txt
+```
+
+Restart the runtime after installation:
+
+```python
+import os
+os.kill(os.getpid(), 9)
+```
+
+Then run 4-bit inference:
+
+```python
+%cd /content/VLM
+!python inference.py --load-4bit --max-new-tokens 256
+```
+
+Display the generated visualization:
+
+```python
+from PIL import Image
+from IPython.display import display
+display(Image.open("/content/VLM/demo/vlm_fo1_result.jpg"))
+```
+
+The first run downloads the VLM-FO1 and Qwen3.5 checkpoints. A free T4 can still run out of memory depending on Colab availability. The current 2048-to-1024 Qwen3.5 bridge and newly added region-token embeddings require training for reliable grounding quality.
+
 ## 🚀 Quick Start
 
 ### 1) Download Model Checkpoints

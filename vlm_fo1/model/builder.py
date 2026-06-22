@@ -29,10 +29,17 @@ def _get_qwen35_auto_model_class():
     )
 
 
-def _qwen35_torch_dtype(device):
+def _preferred_torch_dtype(device):
+    """Choose a dtype supported by the active device (T4 uses float16)."""
     if isinstance(device, str) and device == "cpu":
         return torch.float32
-    return torch.bfloat16
+    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        return torch.bfloat16
+    return torch.float16
+
+
+def _qwen35_torch_dtype(device):
+    return _preferred_torch_dtype(device)
 
 
 def _qwen35_device_map(device):
@@ -123,6 +130,7 @@ def load_pretrained_model(
     Returns:
         tuple: (tokenizer, model, image_processor)
     """
+    model_dtype = _preferred_torch_dtype(device)
     kwargs = {"device_map": device}
 
     # Set model loading parameters for quantization or floating point
@@ -131,7 +139,7 @@ def load_pretrained_model(
     elif load_4bit:
         kwargs['load_in_4bit'] = True
     else:
-        kwargs['torch_dtype'] = torch.bfloat16
+        kwargs['torch_dtype'] = model_dtype
 
     # print(model_path)
 
@@ -174,7 +182,7 @@ def load_pretrained_model(
         primary_vision_tower = model.get_vision_tower()
         if primary_vision_tower and not primary_vision_tower.is_loaded:
             primary_vision_tower.load_model(model_path=model_path, is_train=False)
-            primary_vision_tower.to(device=device, dtype=torch.bfloat16)  # Move to correct device/dtype
+            primary_vision_tower.to(device=device, dtype=model_dtype)  # Move to correct device/dtype
 
         # Grab primary image processor from vision tower, if present
         if primary_vision_tower:
@@ -193,7 +201,7 @@ def load_pretrained_model(
             # Only load if not already loaded
             if aux_vision_tower and not aux_vision_tower.is_loaded:
                 aux_vision_tower.load_model(image_size=aux_image_size, is_train=False, aspect_ratio=aux_image_aspect_ratio)
-                aux_vision_tower.to(device=device, dtype=torch.bfloat16)
+                aux_vision_tower.to(device=device, dtype=model_dtype)
 
         # Get auxiliary image processor if there is an aux vision tower
         if aux_vision_tower:
@@ -228,5 +236,5 @@ def load_pretrained_model(
 
     # Set original Qwen2.5-VL model to eval mode and move to correct device before returning
     model.eval()
-    model.to(device=device, dtype=torch.bfloat16)
+    model.to(device=device, dtype=model_dtype)
     return tokenizer, model, image_processor
