@@ -1,8 +1,45 @@
-from transformers import AutoTokenizer
+from transformers import AutoModelForImageTextToText, AutoTokenizer
 import torch
 from vlm_fo1.model import *
 from safetensors.torch import load_file
 import os
+
+
+QWEN35_MODEL = "Qwen/Qwen3.5-0.8B"
+
+
+def load_qwen35_tokenizer(model_path=QWEN35_MODEL, num_region_tokens=100):
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path,
+        use_fast=False,
+        trust_remote_code=True,
+    )
+
+    if tokenizer.pad_token is None:
+        if tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        else:
+            tokenizer.add_special_tokens({"pad_token": "<|endoftext|>"})
+
+    region_tokens = [f"<region{i}>" for i in range(num_region_tokens)]
+    tokenizer.add_tokens(region_tokens, special_tokens=True)
+    return tokenizer
+
+
+def load_qwen35_model(tokenizer, model_path=QWEN35_MODEL, device="cuda"):
+    dtype = torch.float32 if device == "cpu" else torch.bfloat16
+    device_map = {"": device} if device not in (None, "auto") else "auto"
+
+    model = AutoModelForImageTextToText.from_pretrained(
+        model_path,
+        trust_remote_code=True,
+        low_cpu_mem_usage=True,
+        device_map=device_map,
+        torch_dtype=dtype,
+    )
+    if model.get_input_embeddings().num_embeddings != len(tokenizer):
+        model.resize_token_embeddings(len(tokenizer))
+    return model
 
 
 def load_pretrained_model(model_path, load_8bit=False, load_4bit=False, device="cuda"):
