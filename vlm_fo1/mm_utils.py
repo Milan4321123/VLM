@@ -25,6 +25,30 @@ import io
 import base64
 
 
+def _special_token_ids(tokenizer, token):
+    token_id = tokenizer.convert_tokens_to_ids(token)
+    if token_id is not None and token_id != tokenizer.unk_token_id:
+        return [token_id]
+
+    token_ids = tokenizer.encode(token, add_special_tokens=False)
+    if len(token_ids) != 1:
+        raise ValueError(f"{token} is not a single token in this tokenizer")
+    return token_ids
+
+
+def _text_ids(tokenizer, text):
+    return tokenizer.encode(text, add_special_tokens=False)
+
+
+def _assistant_suffix(tokenizer, enable_thinking):
+    tokenizer_name = getattr(tokenizer, "name_or_path", "").lower()
+    if "qwen3.5" not in tokenizer_name:
+        return ""
+    if enable_thinking:
+        return "<think>\n"
+    return "<think>\n\n</think>\n\n"
+
+
 def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
     """
     Tokenizes prompts containing <image> or <image_0>... special tokens.
@@ -480,26 +504,23 @@ def make_message_context(tokenizer, message, chat_format="chatml"):
     image_urls = []
     if chat_format == "chatml":
         im_start, im_end = "<|im_start|>", "<|im_end|>"
-        im_start_tokens = [151644]
-        im_end_tokens = [151645]
-        nl_tokens = tokenizer.encode("\n")
+        im_start_tokens = _special_token_ids(tokenizer, im_start)
+        im_end_tokens = _special_token_ids(tokenizer, im_end)
+        nl_tokens = _text_ids(tokenizer, "\n")
         role = message["role"]
         content = message["content"]
         bbox_list = message.get("bbox_list", None)
 
         if role == "system":
             inp = f"{im_start}{role}\n{content}{im_end}\n"
-            context_tokens = tokenizer.encode(
-                role, allowed_special=set()) + nl_tokens + tokenizer.encode(content, allowed_special=set())
+            context_tokens = _text_ids(tokenizer, role) + nl_tokens + _text_ids(tokenizer, content)
             context_tokens = im_start_tokens + context_tokens + im_end_tokens
 
         if role == "user":
             if isinstance(content, str):
                 # Plain string message
                 inp = f"{im_start}{role}\n{content}{im_end}\n"
-                context_tokens = tokenizer.encode(
-                    role, allowed_special=set()) + nl_tokens + tokenizer.encode(content,
-                                                                                allowed_special=set())
+                context_tokens = _text_ids(tokenizer, role) + nl_tokens + _text_ids(tokenizer, content)
                 context_tokens = im_start_tokens + context_tokens + im_end_tokens
             if isinstance(content, list):
                 # Multi-part message (text and image_url parts, maybe region tokens)
@@ -529,7 +550,7 @@ def make_message_context(tokenizer, message, chat_format="chatml"):
                     context_tokens = tokenizer_image_token(inp, tokenizer, image_token_index=IMAGE_TOKEN_INDEX)
         return inp, context_tokens, image_urls, bbox_list
 
-def prepare_inputs(model_name, model, image_processors, tokenizer, messages, device="cuda", max_tokens=512, top_p=1.0, temperature=0.0, do_sample=False, image_size=None):
+def prepare_inputs(model_name, model, image_processors, tokenizer, messages, device="cuda", max_tokens=512, top_p=1.0, temperature=0.0, do_sample=False, image_size=None, enable_thinking=False):
     """
     Fully prepares keyword arguments for model.generate (and compatible API) from messages and model specs.
 
@@ -570,15 +591,21 @@ def prepare_inputs(model_name, model, image_processors, tokenizer, messages, dev
         system_content = "system\nYou are a helpful assistant."
         system_prompt = "<|im_start|>" + system_content + "<|im_end|>" + "\n"
         prompt = system_prompt + prompt
-        system_tokens = [151644] + tokenizer(system_content).input_ids + [151645] + tokenizer("\n").input_ids
+        system_tokens = (
+            _special_token_ids(tokenizer, "<|im_start|>")
+            + _text_ids(tokenizer, system_content)
+            + _special_token_ids(tokenizer, "<|im_end|>")
+            + _text_ids(tokenizer, "\n")
+        )
         input_tokens = system_tokens + input_tokens
 
     # Ensure prompt ends with assistant's turn.
     if not prompt.endswith("<|im_start|>assistant"):
-        last_assistant_prompt = "<|im_start|>" + "assistant" + "\n"
+        suffix = _assistant_suffix(tokenizer, enable_thinking)
+        last_assistant_prompt = "<|im_start|>" + "assistant" + "\n" + suffix
         prompt += last_assistant_prompt
-        # last_assistant_tokens = [6] + self.tokenizer("assistant\n").input_ids
-        last_assistant_tokens = [151644] + tokenizer("assistant\n").input_ids
+        last_assistant_tokens = _special_token_ids(tokenizer, "<|im_start|>")
+        last_assistant_tokens += _text_ids(tokenizer, "assistant\n" + suffix)
         input_tokens.extend(last_assistant_tokens)
 
     primary_images_tensor = None
@@ -623,12 +650,11 @@ def prepare_inputs(model_name, model, image_processors, tokenizer, messages, dev
         primary_image_grid_thws.append(image_grid_thw_i)
     primary_images_tensor = [image_i.to(device) for image_i in primary_images]
 
-    # For Qwen-style, force specific end-token as stopping criterion
-    if "qwen" in model_name.lower():
-        input_ids = torch.tensor([input_tokens]).to(device)
-        keywords = ["<|im_end|>"]
-
-    stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, input_ids)
+    input_ids = torch.tensor([input_tokens]).to(device)
+    stop_token = tokenizer.eos_token or "<|im_end|>"
+    stopping_criteria = KeywordsStoppingCriteria(
+        [stop_token], tokenizer, input_ids
+    )
     streamer = TextStreamer(
         tokenizer, skip_prompt=True, skip_special_tokens=True
     )
@@ -654,7 +680,11 @@ def prepare_inputs(model_name, model, image_processors, tokenizer, messages, dev
         top_p=top_p,
         use_cache=True,
         stopping_criteria=[stopping_criteria],
-        pad_token_id=tokenizer.pad_token_id
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=(
+            tokenizer.pad_token_id
+            if tokenizer.pad_token_id is not None
+            else tokenizer.eos_token_id
+        )
     )
     return generation_kwargs
-
