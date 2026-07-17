@@ -1,6 +1,8 @@
 from transformers import AutoModelForImageTextToText, AutoTokenizer
 import torch
+import torch.nn as nn
 from vlm_fo1.model import *
+from vlm_fo1.model.language_model.qwen35_fo1_wrapper import Qwen35FO1Wrapper
 from safetensors.torch import load_file
 import os
 
@@ -42,7 +44,20 @@ def load_qwen35_model(tokenizer, model_path=QWEN35_MODEL, device="cuda"):
     return model
 
 
-def load_pretrained_model(model_path, load_8bit=False, load_4bit=False, device="cuda"):
+def remove_qwen25_decoder(model):
+    model.model.layers = nn.ModuleList()
+    model.model.embed_tokens = nn.Embedding(1, 1)
+    model.model.norm = nn.Identity()
+    model.lm_head = nn.Identity()
+
+
+def load_pretrained_model(
+    model_path,
+    load_8bit=False,
+    load_4bit=False,
+    device="cuda",
+    llm_model_path=QWEN35_MODEL,
+):
     """
     Loads a pretrained model along with its vision towers (and associated image processors).
     This function supports loading in 8bit/4bit precision and explicit device placement.
@@ -70,8 +85,7 @@ def load_pretrained_model(model_path, load_8bit=False, load_4bit=False, device="
 
     # Only proceed for vlm-fo1 models
     if 'vlm-fo1' in model_path.lower():
-        # Load tokenizer (slow tokenizer enforced)
-        tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
+        tokenizer = load_qwen35_tokenizer(llm_model_path)
         # If this is the Qwen2.5-VL variant, load with additional kwargs
         if 'qwen2.5-vl' in model_path.lower() or 'qwen2_5_vl' in model_path.lower():
             model, loading_info = OmChatQwen25VLForCausalLM.from_pretrained(
@@ -120,7 +134,12 @@ def load_pretrained_model(model_path, load_8bit=False, load_4bit=False, device="
         # image_processor returned as a tuple of (primary, aux)
         image_processor = (primary_image_processor, aux_image_processor)
 
-    # Set model to eval mode and move to correct device before returning
+    remove_qwen25_decoder(model)
+    language_model = load_qwen35_model(
+        tokenizer,
+        model_path=llm_model_path,
+        device=device,
+    )
+    model = Qwen35FO1Wrapper(model, language_model, tokenizer)
     model.eval()
-    model.to(device=device, dtype=torch.bfloat16)
     return tokenizer, model, image_processor
