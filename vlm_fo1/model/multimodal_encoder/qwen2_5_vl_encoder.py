@@ -205,7 +205,17 @@ class Qwen2_5_VlVisionTower(nn.Module):
         Actually load Qwen2.5 Vision Tower backbone and processor.
         Sets up the image tower and patch feed pipeline.
         """
-        self.image_tower = Qwen2_5_VisionTransformerPretrainedModel._from_config(self.cfg_only, attn_implementation="flash_attention_2", torch_dtype=torch.bfloat16)
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            dtype = torch.bfloat16
+        elif torch.cuda.is_available():
+            dtype = torch.float16
+        else:
+            dtype = torch.float32
+        self.image_tower = Qwen2_5_VisionTransformerPretrainedModel._from_config(
+            self.cfg_only,
+            attn_implementation="sdpa",
+            torch_dtype=dtype,
+        )
         # print(f'Qwen2_5_VlVisionTower loading_info: {loading_info}')
 
         if model_path is not None:
@@ -298,4 +308,3 @@ class Qwen2_5_VlVisionTower(nn.Module):
     def num_patches(self):
         """Return number of vision tokens (patches) in processed image."""
         return (self.config.image_size // self.config.patch_size) ** 2
-

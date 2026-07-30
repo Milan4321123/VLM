@@ -1,4 +1,8 @@
-from transformers import AutoModelForImageTextToText, AutoTokenizer
+from transformers import (
+    AutoModelForImageTextToText,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+)
 import torch
 import torch.nn as nn
 from vlm_fo1.model import *
@@ -8,6 +12,14 @@ import os
 
 
 QWEN35_MODEL = "Qwen/Qwen3.5-0.8B"
+
+
+def model_dtype(device):
+    if device == "cpu":
+        return torch.float32
+    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        return torch.bfloat16
+    return torch.float16
 
 
 def load_qwen35_tokenizer(model_path=QWEN35_MODEL, num_region_tokens=100):
@@ -28,17 +40,27 @@ def load_qwen35_tokenizer(model_path=QWEN35_MODEL, num_region_tokens=100):
     return tokenizer
 
 
-def load_qwen35_model(tokenizer, model_path=QWEN35_MODEL, device="cuda"):
-    dtype = torch.float32 if device == "cpu" else torch.bfloat16
+def load_qwen35_model(
+    tokenizer,
+    model_path=QWEN35_MODEL,
+    device="cuda",
+    load_8bit=False,
+    load_4bit=False,
+):
     device_map = {"": device} if device not in (None, "auto") else "auto"
+    load_args = {
+        "trust_remote_code": True,
+        "low_cpu_mem_usage": True,
+        "device_map": device_map,
+    }
+    if load_8bit:
+        load_args["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+    elif load_4bit:
+        load_args["quantization_config"] = BitsAndBytesConfig(load_in_4bit=True)
+    else:
+        load_args["torch_dtype"] = model_dtype(device)
 
-    model = AutoModelForImageTextToText.from_pretrained(
-        model_path,
-        trust_remote_code=True,
-        low_cpu_mem_usage=True,
-        device_map=device_map,
-        torch_dtype=dtype,
-    )
+    model = AutoModelForImageTextToText.from_pretrained(model_path, **load_args)
     if model.get_input_embeddings().num_embeddings != len(tokenizer):
         model.resize_token_embeddings(len(tokenizer))
     return model
@@ -71,15 +93,16 @@ def load_pretrained_model(
     Returns:
         tuple: (tokenizer, model, image_processor)
     """
+    dtype = model_dtype(device)
     kwargs = {"device_map": device}
 
     # Set model loading parameters for quantization or floating point
     if load_8bit:
-        kwargs['load_in_8bit'] = True
+        kwargs['quantization_config'] = BitsAndBytesConfig(load_in_8bit=True)
     elif load_4bit:
-        kwargs['load_in_4bit'] = True
+        kwargs['quantization_config'] = BitsAndBytesConfig(load_in_4bit=True)
     else:
-        kwargs['torch_dtype'] = torch.bfloat16
+        kwargs['torch_dtype'] = dtype
 
     # print(model_path)
 
@@ -92,7 +115,7 @@ def load_pretrained_model(
                 model_path,
                 low_cpu_mem_usage=True,
                 output_loading_info=True,
-                attn_implementation="flash_attention_2",
+                attn_implementation="sdpa",
                 **kwargs
             )
             # print(f'OmChatQwen25VLForCausalLM loading_info: {loading_info}')
@@ -104,7 +127,7 @@ def load_pretrained_model(
         primary_vision_tower = model.get_vision_tower()
         if primary_vision_tower and not primary_vision_tower.is_loaded:
             primary_vision_tower.load_model(model_path=model_path, is_train=False)
-            primary_vision_tower.to(device=device, dtype=torch.bfloat16)  # Move to correct device/dtype
+            primary_vision_tower.to(device=device, dtype=dtype)
 
         # Grab primary image processor from vision tower, if present
         if primary_vision_tower:
@@ -123,7 +146,7 @@ def load_pretrained_model(
             # Only load if not already loaded
             if aux_vision_tower and not aux_vision_tower.is_loaded:
                 aux_vision_tower.load_model(image_size=aux_image_size, is_train=False, aspect_ratio=aux_image_aspect_ratio)
-                aux_vision_tower.to(device=device, dtype=torch.bfloat16)
+                aux_vision_tower.to(device=device, dtype=dtype)
 
         # Get auxiliary image processor if there is an aux vision tower
         if aux_vision_tower:
@@ -139,6 +162,8 @@ def load_pretrained_model(
         tokenizer,
         model_path=llm_model_path,
         device=device,
+        load_8bit=load_8bit,
+        load_4bit=load_4bit,
     )
     model = Qwen35FO1Wrapper(model, language_model, tokenizer)
     model.eval()
