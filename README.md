@@ -116,6 +116,34 @@ conda activate vlm-fo1
 pip install -r requirements.txt
 ```
 
+### Google Colab
+
+I used 4-bit loading for the free T4 runtime. Start a GPU runtime and run:
+
+```python
+!git clone --depth 1 --branch codex/qwen35-day-by-day https://github.com/Milan4321123/VLM.git /content/VLM
+%cd /content/VLM
+!pip install -q -r requirements-colab.txt
+```
+
+Restart the runtime after the installation:
+
+```python
+import os
+os.kill(os.getpid(), 9)
+```
+
+Then run the included example:
+
+```python
+%cd /content/VLM
+!python inference.py --load-4bit --max-new-tokens 256
+```
+
+The result is written to `demo/vlm_fo1_result.jpg`. The feature bridge is not
+trained, so this run checks that the new decoder is connected and can generate;
+it is not an accuracy test.
+
 ## 🚀 Quick Start
 
 ### 1) Download Model Checkpoints
@@ -259,4 +287,3 @@ If you find VLM-FO1 useful in your research or applications, please cite our wor
 - UPN detector is integrated from an external open-source project. Please refer to: [ChatRex](https://github.com/IDEA-Research/ChatRex)
 - Dataset images used above are from public benchmarks ([Pixmo-Count](https://huggingface.co/datasets/allenai/pixmo-count), [CountBenchQA](https://huggingface.co/datasets/vikhyatk/CountBenchQA)), credited to their respective authors.
 - Thanks to the numerous researchers and developers who have contributed to the datasets used in our training.
-

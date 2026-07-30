@@ -1,0 +1,11 @@
+# Colab already has a CUDA build of PyTorch.
+transformers>=5.2.0
+accelerate>=1.4.0
+bitsandbytes>=0.46.0
+timm==1.0.9
+einops
+ninja
+scikit-image
+eva-decord
+scikit-learn
+matplotlib
