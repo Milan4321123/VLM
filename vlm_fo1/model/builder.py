@@ -1,4 +1,4 @@
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, BitsAndBytesConfig
 import torch
 from vlm_fo1.model import *
 from safetensors.torch import load_file
@@ -33,9 +33,9 @@ def load_pretrained_model(model_path, load_8bit=False, load_4bit=False, device="
 
     # Set model loading parameters for quantization or floating point
     if load_8bit:
-        kwargs['load_in_8bit'] = True
+        kwargs['quantization_config'] = BitsAndBytesConfig(load_in_8bit=True)
     elif load_4bit:
-        kwargs['load_in_4bit'] = True
+        kwargs['quantization_config'] = BitsAndBytesConfig(load_in_4bit=True)
     else:
         kwargs['torch_dtype'] = model_dtype
 
