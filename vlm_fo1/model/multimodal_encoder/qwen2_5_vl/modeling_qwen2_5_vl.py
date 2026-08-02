@@ -34,7 +34,16 @@ import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
 
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache, SlidingWindowCache, StaticCache
+from transformers.cache_utils import Cache, DynamicCache, StaticCache
+try:
+    from transformers.cache_utils import SlidingWindowCache
+except ImportError:
+    # transformers>=5 removed SlidingWindowCache. It is only referenced in the
+    # text decoder's causal-mask prep, which VLM-FO1 never runs (only the
+    # vision tower is used); an inert stand-in keeps those isinstance() checks
+    # valid.
+    class SlidingWindowCache:
+        pass
 from transformers.generation import GenerationMixin
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_outputs import BaseModelOutputWithPast, ModelOutput
