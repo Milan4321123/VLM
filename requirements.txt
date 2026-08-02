@@ -1,12 +1,15 @@
 torch==2.6.0
 torchvision==0.21.0
-transformers==4.50.1
+# The qwen3_5 architecture (Qwen/Qwen3.5-0.8B) was only added to Transformers
+# in the 5.2.0 release; older/4.x installs raise
+# "does not recognize this architecture" for it.
+transformers>=5.2.0
 timm==1.0.9
 accelerate==1.4.0
 gradio
 einops
 ninja
 scikit-image
-decord
+eva-decord
 scikit-learn
 matplotlib
