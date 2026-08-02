@@ -30,6 +30,11 @@ def parse_args():
     parser.add_argument("--label", default="orange")
     parser.add_argument("--bboxes-json", help="Optional JSON file containing [[x1, y1, x2, y2], ...].")
     parser.add_argument("--model-path", default="omlab/VLM-FO1_Qwen2.5-VL-3B-v01")
+    parser.add_argument(
+        "--llm-model-path",
+        default="Qwen/Qwen3.5-0.8B",
+        help="Decoder used for generation. Pass '' to keep the checkpoint's own decoder.",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--load-4bit", action="store_true", help="Reduce VRAM use; recommended for Colab T4.")
     parser.add_argument("--max-new-tokens", type=int, default=256)
@@ -68,6 +73,7 @@ def main():
         args.model_path,
         load_4bit=args.load_4bit,
         device=args.device,
+        llm_model_path=args.llm_model_path or None,
     )
     generation_kwargs = prepare_inputs(
         args.model_path,
