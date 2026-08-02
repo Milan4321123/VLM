@@ -39,6 +39,24 @@ def _encode_text(tokenizer, text):
     return tokenizer.encode(text, add_special_tokens=False)
 
 
+def _uses_qwen35_chat_template(tokenizer):
+    template = getattr(tokenizer, "chat_template", "") or ""
+    name = getattr(tokenizer, "name_or_path", "") or ""
+    return "qwen3.5" in name.lower() or "enable_thinking" in template
+
+
+def _assistant_generation_suffix(tokenizer, enable_thinking=False):
+    # Qwen2.5-VL's template opens the reply with just "<|im_start|>assistant\n".
+    # Qwen3.5's inserts a think block right after that marker, and the model
+    # expects it. We build prompts by hand (the image/region sentinels rule out
+    # apply_chat_template), so reproduce the same suffix here.
+    if not _uses_qwen35_chat_template(tokenizer):
+        return ""
+    if enable_thinking:
+        return "<think>\n"
+    return "<think>\n\n</think>\n\n"
+
+
 def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
     """
     Tokenizes prompts containing <image> or <image_0>... special tokens.
@@ -546,7 +564,7 @@ def make_message_context(tokenizer, message, chat_format="chatml"):
                     context_tokens = tokenizer_image_token(inp, tokenizer, image_token_index=IMAGE_TOKEN_INDEX)
         return inp, context_tokens, image_urls, bbox_list
 
-def prepare_inputs(model_name, model, image_processors, tokenizer, messages, device="cuda", max_tokens=512, top_p=1.0, temperature=0.0, do_sample=False, image_size=None):
+def prepare_inputs(model_name, model, image_processors, tokenizer, messages, device="cuda", max_tokens=512, top_p=1.0, temperature=0.0, do_sample=False, image_size=None, enable_thinking=False):
     """
     Fully prepares keyword arguments for model.generate (and compatible API) from messages and model specs.
 
@@ -598,9 +616,10 @@ def prepare_inputs(model_name, model, image_processors, tokenizer, messages, dev
 
     # Ensure prompt ends with assistant's turn.
     if not prompt.endswith("<|im_start|>assistant"):
-        last_assistant_prompt = "<|im_start|>" + "assistant" + "\n"
+        assistant_suffix = _assistant_generation_suffix(tokenizer, enable_thinking=enable_thinking)
+        last_assistant_prompt = "<|im_start|>" + "assistant" + "\n" + assistant_suffix
         prompt += last_assistant_prompt
-        last_assistant_tokens = _special_token_ids(tokenizer, "<|im_start|>") + _encode_text(tokenizer, "assistant\n")
+        last_assistant_tokens = _special_token_ids(tokenizer, "<|im_start|>") + _encode_text(tokenizer, "assistant\n" + assistant_suffix)
         input_tokens.extend(last_assistant_tokens)
 
     primary_images_tensor = None
