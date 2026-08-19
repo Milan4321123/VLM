@@ -73,13 +73,19 @@ def remove_qwen25_decoder(model):
     model.lm_head = nn.Identity()
 
 
-def load_pretrained_model(
-    model_path,
-    load_8bit=False,
-    load_4bit=False,
-    device="cuda",
-    llm_model_path=QWEN35_MODEL,
-):
+def pick_attn_implementation():
+    """
+    Prefer flash attention when the package is importable, otherwise fall back
+    to PyTorch SDPA so the model still loads on CPU or pre-Ampere GPUs.
+    """
+    try:
+        import flash_attn  # noqa: F401
+        return "flash_attention_2"
+    except ImportError:
+        return "sdpa"
+
+
+def load_pretrained_model(model_path, load_8bit=False, load_4bit=False, device="cuda"):
     """
     Loads a pretrained model along with its vision towers (and associated image processors).
     This function supports loading in 8bit/4bit precision and explicit device placement.
@@ -104,24 +110,38 @@ def load_pretrained_model(
     else:
         kwargs['torch_dtype'] = dtype
 
-    # print(model_path)
+    model_name = model_path.lower()
+    is_qwen2_5 = 'qwen2.5-vl' in model_name or 'qwen2_5_vl' in model_name
+    is_qwen3_5 = 'qwen3.5' in model_name or 'qwen3_5' in model_name
 
     # Only proceed for vlm-fo1 models
-    if 'vlm-fo1' in model_path.lower():
-        tokenizer = load_qwen35_tokenizer(llm_model_path)
-        # If this is the Qwen2.5-VL variant, load with additional kwargs
-        if 'qwen2.5-vl' in model_path.lower() or 'qwen2_5_vl' in model_path.lower():
+    if 'vlm-fo1' in model_name:
+        # Load tokenizer (slow tokenizer enforced)
+        tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
+        if is_qwen3_5:
+            if "OmChatQwen35ForCausalLM" not in globals():
+                raise ImportError(
+                    "This checkpoint needs the Qwen3.5 backbone, which requires "
+                    "transformers >= 5.2. Installed transformers could not provide it."
+                )
+            model, loading_info = OmChatQwen35ForCausalLM.from_pretrained(
+                model_path,
+                low_cpu_mem_usage=True,
+                output_loading_info=True,
+                attn_implementation=pick_attn_implementation(),
+                **kwargs
+            )
+        elif is_qwen2_5:
             model, loading_info = OmChatQwen25VLForCausalLM.from_pretrained(
                 model_path,
                 low_cpu_mem_usage=True,
                 output_loading_info=True,
-                attn_implementation="sdpa",
+                attn_implementation=pick_attn_implementation(),
                 **kwargs
             )
-            # print(f'OmChatQwen25VLForCausalLM loading_info: {loading_info}')
         # (For other variants of vlm-fo1, model loading detail may need additional condition.)
 
-    if 'vlm-fo1' in model_path.lower():
+    if 'vlm-fo1' in model_name:
         # --- Vision Tower Loading ---
         # Load the main vision tower weights from model_path if it is not yet loaded
         primary_vision_tower = model.get_vision_tower()
@@ -133,8 +153,8 @@ def load_pretrained_model(
         if primary_vision_tower:
             primary_image_processor = primary_vision_tower.image_processor
 
-        # --- Auxiliary Vision Tower Handling (Qwen2.5-VL case only) ---
-        if 'qwen2.5-vl' in model_path.lower() or 'qwen2_5_vl' in model_path.lower():
+        # --- Auxiliary Vision Tower Handling (Qwen backbones) ---
+        if is_qwen2_5 or is_qwen3_5:
             try:
                 aux_image_size = model.config.aux_image_size
             except Exception:
@@ -157,14 +177,4 @@ def load_pretrained_model(
         # image_processor returned as a tuple of (primary, aux)
         image_processor = (primary_image_processor, aux_image_processor)
 
-    remove_qwen25_decoder(model)
-    language_model = load_qwen35_model(
-        tokenizer,
-        model_path=llm_model_path,
-        device=device,
-        load_8bit=load_8bit,
-        load_4bit=load_4bit,
-    )
-    model = Qwen35FO1Wrapper(model, language_model, tokenizer)
-    model.eval()
     return tokenizer, model, image_processor
