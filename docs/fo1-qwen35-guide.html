@@ -1,0 +1,798 @@
+<title>FO1 on Qwen3.5</title>
+<style>
+  :root {
+    --bg: #F6F7F5;
+    --surface: #FFFFFF;
+    --surface-2: #EFF2EF;
+    --ink: #1E2B2A;
+    --muted: #5B6B69;
+    --line: #DCE2DF;
+    --accent: #0E7A6F;
+    --accent-soft: #E2F0ED;
+    --delta: #A85E08;
+    --delta-soft: #F8EDDA;
+    --code-bg: #F0F3F1;
+    --code-ink: #24322F;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101514;
+      --surface: #182120;
+      --surface-2: #1E2A28;
+      --ink: #E4ECE9;
+      --muted: #96A8A4;
+      --line: #2B3835;
+      --accent: #47BBAC;
+      --accent-soft: #143430;
+      --delta: #E2A24C;
+      --delta-soft: #382A12;
+      --code-bg: #141D1C;
+      --code-ink: #D7E2DF;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #101514;
+    --surface: #182120;
+    --surface-2: #1E2A28;
+    --ink: #E4ECE9;
+    --muted: #96A8A4;
+    --line: #2B3835;
+    --accent: #47BBAC;
+    --accent-soft: #143430;
+    --delta: #E2A24C;
+    --delta-soft: #382A12;
+    --code-bg: #141D1C;
+    --code-ink: #D7E2DF;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: Charter, "Bitstream Charter", "Iowan Old Style", Georgia, serif;
+    font-size: 17px;
+    line-height: 1.68;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 48px 24px 96px; }
+  .prose { max-width: 760px; }
+  h1, h2, h3, h4 {
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    line-height: 1.25;
+    text-wrap: balance;
+    letter-spacing: -0.01em;
+  }
+  h1 { font-size: 2.3rem; font-weight: 700; margin: 0.2em 0 0.25em; }
+  h2 { font-size: 1.55rem; font-weight: 680; margin: 2.6em 0 0.6em; }
+  h3 { font-size: 1.18rem; font-weight: 650; margin: 2em 0 0.5em; }
+  h4 { font-size: 1rem; font-weight: 650; margin: 1.6em 0 0.4em; }
+  p { margin: 0.85em 0; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+  .eyebrow {
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 0.74rem;
+    font-weight: 650;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 3.4em 0 0.2em;
+  }
+  .standfirst { font-size: 1.16rem; color: var(--muted); max-width: 700px; margin-top: 0; }
+  code, pre, .mono {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  }
+  code {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border-radius: 4px;
+    padding: 0.08em 0.35em;
+    font-size: 0.84em;
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 0.8rem;
+    line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .filetag {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-radius: 4px;
+    padding: 0.12em 0.5em;
+    white-space: nowrap;
+  }
+  .delta-tag {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    color: var(--delta);
+    background: var(--delta-soft);
+    border-radius: 4px;
+    padding: 0.12em 0.5em;
+    white-space: nowrap;
+  }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin: 1.4em 0;
+  }
+  .panel.accent { border-left: 4px solid var(--accent); }
+  .panel.delta  { border-left: 4px solid var(--delta); }
+  .panel h3:first-child, .panel h4:first-child { margin-top: 0.2em; }
+  .qa dt {
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-weight: 650;
+    margin-top: 1em;
+  }
+  .qa dd { margin: 0.25em 0 0 0; }
+  .statusgrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 12px;
+    margin: 1.6em 0;
+  }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .stat .k {
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 0.72rem; font-weight: 650; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .stat .v { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.86rem; margin-top: 4px; word-break: break-all; }
+  .tablewrap { overflow-x: auto; margin: 1.2em 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 9px 14px; border-top: 1px solid var(--line); vertical-align: top; }
+  thead th {
+    border-top: none;
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 0.74rem; font-weight: 650; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted); background: var(--surface-2);
+  }
+  td { font-variant-numeric: tabular-nums; }
+  td code { white-space: nowrap; }
+  .toc {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 8px 24px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin: 1.8em 0;
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 0.92rem;
+  }
+  .toc a { text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc .part {
+    font-size: 0.72rem; font-weight: 650; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 2px;
+  }
+  figure { margin: 1.8em 0; }
+  figure svg { max-width: 100%; height: auto; display: block; }
+  .figscroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  figcaption { font-size: 0.88rem; color: var(--muted); margin-top: 10px; max-width: 760px; }
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin: 1.2em 0;
+  }
+  .step .stephead {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  .step .num {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.8rem; font-weight: 600;
+    color: var(--delta); background: var(--delta-soft);
+    border-radius: 4px; padding: 0.15em 0.55em;
+  }
+  .step h3 { margin: 0; font-size: 1.08rem; }
+  .checklist { list-style: none; padding-left: 0; }
+  .checklist li { padding-left: 1.7em; position: relative; margin: 0.45em 0; }
+  .checklist li::before {
+    content: "☐"; position: absolute; left: 0; top: 0;
+    color: var(--accent); font-size: 1.05em;
+  }
+  .footnote { font-size: 0.85rem; color: var(--muted); }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: 0.3em 0; }
+  hr { border: none; border-top: 1px solid var(--line); margin: 3em 0; }
+  .legend { display: flex; gap: 20px; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); font-family: -apple-system, "Segoe UI", system-ui, sans-serif; margin-top: 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+</style>
+
+<div class="wrap">
+
+<p class="eyebrow" style="margin-top:0">VLM-FO1 · engineering guide</p>
+<h1>FO1 on Qwen3.5</h1>
+<p class="standfirst">What this repository does, how every part of it works, and exactly what has to change to swap the Qwen2.5-VL backbone for Qwen3.5 — architecture only, no training.</p>
+
+<div class="statusgrid">
+  <div class="stat"><div class="k">Repository</div><div class="v">milan4321123/vlm-fo1 (fork of om-ai-lab/VLM-FO1)</div></div>
+  <div class="stat"><div class="k">Backbone today</div><div class="v">Qwen2.5-VL-3B (transformers 4.50.1)</div></div>
+  <div class="stat"><div class="k">Target</div><div class="v">Qwen3.5 (transformers ≥ v5.2)</div></div>
+  <div class="stat"><div class="k">Swap status</div><div class="v">not started — no code changes on this branch yet</div></div>
+</div>
+
+<div class="toc">
+  <div>
+    <div class="part">Part I — The project</div>
+    <a href="#answers">Straight answers first</a><br>
+    <a href="#idea">The big idea</a><br>
+    <a href="#pipeline">One request, end to end</a><br>
+    <a href="#map">Repository map</a><br>
+    <a href="#components">Component deep-dives</a>
+  </div>
+  <div>
+    <div class="part">Part II — The two backbones</div>
+    <a href="#qwen35">What Qwen3.5 actually is</a><br>
+    <a href="#compare">Qwen2.5-VL vs Qwen3.5</a>
+  </div>
+  <div>
+    <div class="part">Part III — The migration</div>
+    <a href="#swapmap">What changes, what stays</a><br>
+    <a href="#steps">Step-by-step plan</a><br>
+    <a href="#smoke">Smoke-test checklist</a>
+  </div>
+  <div>
+    <div class="part">Part IV — Context</div>
+    <a href="#nofinetune">Why “no fine-tuning” makes sense</a><br>
+    <a href="#glossary">Glossary</a><br>
+    <a href="#sources">Sources</a>
+  </div>
+</div>
+
+<h2 id="answers">Straight answers first</h2>
+<dl class="qa prose">
+  <dt>What was I asked to do?</dt>
+  <dd>VLM-FO1 is built on top of the <strong>Qwen2.5-VL</strong> vision-language model. Your task is to make the codebase run on <strong>Qwen3.5</strong> instead — Alibaba’s newer model family released in February 2026. “Architectural changes only” means: rewire the code so the new backbone fits, but do not train or fine-tune anything. The branch name of this task (<code>qwen-to-35</code>) confirms the target.</dd>
+
+  <dt>Is it already done?</dt>
+  <dd><strong>No.</strong> I checked the git history: this fork is identical to the upstream project, and your working branch has zero code changes. What probably caused the confusion is that the project <em>advertises</em> itself as “plug-and-play with any VLM” — the architecture is deliberately modular, and the finished Qwen2.5-VL integration acts as a template you can copy. So the ground is prepared, but the Qwen3.5 swap itself has not been written.</dd>
+
+  <dt>Why is “no training” even possible?</dt>
+  <dd>Because the assignment is about <em>code integration</em>, not model quality. You make the pipeline load Qwen3.5, run an image through it, and produce output without crashing. The learned glue layers (projectors) were trained against Qwen2.5-VL, so answer quality after the swap will be poor until someone retrains them — that is expected and explicitly out of your scope. See <a href="#nofinetune">Part IV</a>.</dd>
+
+  <dt>Where do I start?</dt>
+  <dd>Read Part I to understand the machine you are modifying, skim Part II for what is different about Qwen3.5, then follow the numbered steps in <a href="#steps">Part III</a>. Throughout this page, <span class="filetag">teal tags</span> mark existing files and <span class="delta-tag">amber tags</span> mark things you must create or change.</dd>
+</dl>
+
+<hr>
+
+<p class="eyebrow">Part I</p>
+<h2 id="idea" style="margin-top:0.2em">The big idea</h2>
+<div class="prose">
+<p>Large vision-language models (VLMs) like Qwen2.5-VL are excellent at <em>reasoning about</em> an image (“what is happening here?”) but mediocre at <em>precisely locating</em> things in it. Asking a VLM to output pixel coordinates for “every orange in this photo” gives you fuzzy, unreliable boxes.</p>
+<p>VLM-FO1 (paper: <a href="https://arxiv.org/abs/2509.25916">arXiv 2509.25916</a>) sidesteps the problem with one elegant trick: <strong>it never asks the model to produce coordinates.</strong> Instead:</p>
+<ol>
+  <li>An external detector (UPN or SAM3) — or the user — supplies candidate bounding boxes.</li>
+  <li>Each box is encoded into a single <strong>region token</strong>: a vector that describes what is inside that box, injected into the prompt as <code>&lt;region0&gt;</code>, <code>&lt;region1&gt;</code>, …</li>
+  <li>The language model answers by <em>naming region indexes</em>: <code>&lt;ground&gt;orange&lt;/ground&gt;&lt;objects&gt;&lt;region0&gt;&lt;region3&gt;&lt;/objects&gt;</code>.</li>
+  <li>A small parser maps those indexes back to the original boxes and draws them.</li>
+</ol>
+<p>Detection becomes a <em>multiple-choice</em> problem instead of a regression problem — which language models are very good at. The quality of a region token is what makes this work, so the project builds it from <strong>two</strong> vision encoders at once (the “Hybrid Fine-grained Region Encoder”, HFRE): the VLM’s own vision tower contributes semantic meaning, and a second detection-oriented backbone (DaViT) contributes sharp spatial detail.</p>
+<p>Everything is bolted <em>around</em> a frozen, pre-trained Qwen2.5-VL — its weights and abilities are preserved. That is the modularity you will exploit: the backbone is a replaceable part.</p>
+</div>
+
+<h2 id="pipeline">One request, end to end</h2>
+
+<figure>
+  <div class="figscroll">
+  <svg viewBox="0 0 980 500" role="img" aria-label="Data flow of one VLM-FO1 request: prompt, image and boxes are encoded by two vision towers, fused into region tokens by the HFRE module, spliced into the embedding sequence, and decoded by the Qwen2.5-VL language model into region indexes that are parsed back to boxes." style="min-width:840px">
+    <defs>
+      <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+      </marker>
+    </defs>
+    <g fill="none" stroke="currentColor" stroke-width="1.2">
+      <!-- inputs -->
+      <rect x="16" y="40" width="128" height="44" rx="7"/>
+      <rect x="16" y="180" width="128" height="44" rx="7"/>
+      <rect x="16" y="330" width="128" height="56" rx="7"/>
+      <!-- encoders -->
+      <rect x="230" y="30" width="180" height="56" rx="7"/>
+      <rect x="230" y="150" width="180" height="56" rx="7" stroke="var(--accent)" stroke-width="1.6"/>
+      <rect x="230" y="260" width="180" height="56" rx="7" stroke="var(--accent)" stroke-width="1.6"/>
+      <!-- HFRE -->
+      <rect x="480" y="255" width="150" height="66" rx="7" stroke="var(--accent)" stroke-width="1.6"/>
+      <!-- projectors -->
+      <rect x="480" y="150" width="150" height="46" rx="7"/>
+      <rect x="480" y="355" width="150" height="46" rx="7"/>
+      <!-- splice -->
+      <rect x="690" y="140" width="120" height="200" rx="7"/>
+      <!-- LLM -->
+      <rect x="850" y="180" width="114" height="120" rx="7"/>
+      <!-- output -->
+      <rect x="700" y="420" width="264" height="52" rx="7"/>
+    </g>
+    <g font-family="-apple-system,'Segoe UI',system-ui,sans-serif" font-size="12.5" fill="currentColor">
+      <text x="80" y="59" text-anchor="middle" font-weight="600">Text prompt</text>
+      <text x="80" y="75" text-anchor="middle" font-size="10.5" opacity="0.7">task template</text>
+      <text x="80" y="199" text-anchor="middle" font-weight="600">Image</text>
+      <text x="80" y="215" text-anchor="middle" font-size="10.5" opacity="0.7">PIL, any size</text>
+      <text x="80" y="351" text-anchor="middle" font-weight="600">N boxes</text>
+      <text x="80" y="367" text-anchor="middle" font-size="10.5" opacity="0.7">UPN / SAM3 / user</text>
+      <text x="320" y="52" text-anchor="middle" font-weight="600">Prompt builder</text>
+      <text x="320" y="68" text-anchor="middle" font-size="10.5" opacity="0.7">ChatML + &lt;image&gt; + &lt;regionN&gt;</text>
+      <text x="320" y="172" text-anchor="middle" font-weight="600">Qwen2.5-VL ViT</text>
+      <text x="320" y="188" text-anchor="middle" font-size="10.5" opacity="0.7">main tower, native res</text>
+      <text x="320" y="282" text-anchor="middle" font-weight="600">DaViT aux tower</text>
+      <text x="320" y="298" text-anchor="middle" font-size="10.5" opacity="0.7">768 × 768, 4-stage pyramid</text>
+      <text x="555" y="173" text-anchor="middle" font-weight="600">mm_projector</text>
+      <text x="555" y="281" text-anchor="middle" font-weight="600">HFRE</text>
+      <text x="555" y="297" text-anchor="middle" font-size="10.5" opacity="0.7">roi_align + fuse + pos-emb</text>
+      <text x="555" y="378" text-anchor="middle" font-weight="600">mm_projector_aux</text>
+      <text x="750" y="230" text-anchor="middle" font-weight="600">Embedding</text>
+      <text x="750" y="246" text-anchor="middle" font-weight="600">splice</text>
+      <text x="750" y="264" text-anchor="middle" font-size="10.5" opacity="0.7">fills −200 / −300</text>
+      <text x="750" y="278" text-anchor="middle" font-size="10.5" opacity="0.7">placeholder slots</text>
+      <text x="907" y="230" text-anchor="middle" font-weight="600">Qwen2.5-VL</text>
+      <text x="907" y="246" text-anchor="middle" font-weight="600">decoder</text>
+      <text x="907" y="263" text-anchor="middle" font-size="10.5" opacity="0.7">M-RoPE, generate()</text>
+      <text x="832" y="441" text-anchor="middle" font-weight="600">Output → parser → boxes</text>
+      <text x="832" y="459" text-anchor="middle" font-size="11" font-family="ui-monospace,Menlo,monospace">&lt;ground&gt;orange&lt;/ground&gt;&lt;objects&gt;&lt;region0&gt;…</text>
+    </g>
+    <g stroke="currentColor" stroke-width="1.2" fill="none">
+      <path d="M144 62 H230" marker-end="url(#arr)"/>
+      <path d="M144 202 H196 V178 L230 178" marker-end="url(#arr)"/>
+      <path d="M144 202 H196 V288 L230 288" marker-end="url(#arr)"/>
+      <path d="M144 358 H455 V310 L480 310" marker-end="url(#arr)"/>
+      <path d="M410 178 H480" marker-end="url(#arr)"/>
+      <path d="M410 288 H480" marker-end="url(#arr)"/>
+      <path d="M410 58 H750 V140" marker-end="url(#arr)"/>
+      <path d="M630 173 H690" marker-end="url(#arr)"/>
+      <path d="M555 321 V355" marker-end="url(#arr)"/>
+      <path d="M630 378 H725 V340" marker-end="url(#arr)"/>
+      <path d="M810 240 H850" marker-end="url(#arr)"/>
+      <path d="M907 300 V420" marker-end="url(#arr)"/>
+      <path d="M340 206 Q400 240 478 262" stroke-dasharray="5 4" marker-end="url(#arr)" stroke="var(--accent)"/>
+    </g>
+    <g font-family="-apple-system,'Segoe UI',system-ui,sans-serif" font-size="10.5" fill="currentColor" opacity="0.75">
+      <text x="188" y="54">template</text>
+      <text x="430" y="50">text embeddings</text>
+      <text x="418" y="170">patch feats</text>
+      <text x="418" y="280">pyramid</text>
+      <text x="300" y="358">boxes (scaled)</text>
+      <text x="648" y="166">image tokens</text>
+      <text x="638" y="372">N region tokens</text>
+      <text x="562" y="343">roi feats</text>
+      <text x="386" y="243" fill="var(--accent)">multi-level feats (patched)</text>
+      <text x="816" y="232">embeds</text>
+      <text x="914" y="330">decodes indexes</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption>One inference call. Teal outlines mark the fine-grained perception path that VLM-FO1 adds on top of the stock VLM; everything else is standard Qwen chat plumbing. The dashed arrow is the monkey-patch that steals intermediate features out of the main vision tower.</figcaption>
+</figure>
+
+<div class="prose">
+<p>Follow a single call to <span class="filetag">inference.py</span> through the code:</p>
+<ol>
+  <li><strong>Message assembly.</strong> You pass chat messages plus a <code>bbox_list</code>. <code>prepare_inputs()</code> in <span class="filetag">vlm_fo1/mm_utils.py:532</span> builds a ChatML prompt. For every image it inserts <code>&lt;|vision_start|&gt;&lt;image&gt;&lt;|vision_end|&gt;</code>, and for every box it appends <code>&lt;region0&gt;&lt;regionfeat&gt;&lt;region1&gt;&lt;regionfeat&gt;…</code>. The literal text <code>&lt;region0&gt;</code> stays as readable text (so the model can echo it back), while each <code>&lt;regionfeat&gt;</code> becomes placeholder id <code>−300</code> and each <code>&lt;image&gt;</code> becomes <code>−200</code> (<span class="filetag">vlm_fo1/constants.py</span>).</li>
+  <li><strong>Image preprocessing.</strong> The same image is prepared twice: once by the Qwen image processor (dynamic resolution, giving <code>pixel_values</code> + <code>image_grid_thw</code>) and once squashed to 768×768 for DaViT. Boxes are rescaled to match (<span class="filetag">vlm_fo1/mm_utils.py:597-623</span>).</li>
+  <li><strong>Main tower.</strong> <code>encode_images()</code> (<span class="filetag">…/language_model/omchat_qwen2_5_vl.py:44</span>) runs the Qwen2.5 ViT. A monkey patch (<span class="filetag">…/multimodal_encoder/qwen2_5_vl_encoder.py:86-171</span>) also captures hidden states at the ViT’s four full-attention layers — a free multi-scale feature pyramid.</li>
+  <li><strong>Region tokens.</strong> <code>encode_regions()</code> (<span class="filetag">omchat_qwen2_5_vl.py:75</span>) runs DaViT, then the HFRE module (<span class="filetag">…/hybrid_finegrained_region_encoder.py</span>) <code>roi_align</code>s every box against both feature sets, pools, adds a sine position embedding of the box geometry, and concatenates → one vector per box → <code>mm_projector_aux</code> lifts it to LLM width.</li>
+  <li><strong>Splice.</strong> <code>prepare_inputs_labels_for_qwen2_5_vl_multimodal()</code> (<span class="filetag">omchat_qwen2_5_vl.py:135</span>) walks the token sequence and replaces every <code>−200</code> slot with the image token embeddings and every <code>−300</code> slot with its region token. It then computes Qwen’s multimodal rotary position ids via <code>get_rope_index()</code>.</li>
+  <li><strong>Generate &amp; parse.</strong> Standard HuggingFace <code>generate()</code>. The output string is parsed by <code>extract_predictions_to_bboxes()</code> (<span class="filetag">mm_utils.py:316</span>) with a regex over <code>&lt;ground&gt;…&lt;objects&gt;…</code>, mapping indexes back to your original boxes.</li>
+</ol>
+</div>
+
+<h2 id="map">Repository map</h2>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Path</th><th>What it is</th><th>Touched by the swap?</th></tr></thead>
+  <tbody>
+    <tr><td><code>inference.py</code></td><td>Minimal example: image + hand-given boxes → answer</td><td>Only the <code>model_path</code> string</td></tr>
+    <tr><td><code>vlm_fo1/model/builder.py</code></td><td>Loads tokenizer, model, both towers, image processors</td><td><strong>Yes</strong> — add a Qwen3.5 branch</td></tr>
+    <tr><td><code>vlm_fo1/model/language_model/omchat_qwen2_5_vl.py</code></td><td>The heart: OmChat×Qwen2.5-VL model classes, embedding splice, forward</td><td><strong>Yes</strong> — copy as template for a new file</td></tr>
+    <tr><td><code>vlm_fo1/model/omchat_arch.py</code></td><td>Meta-model mixin: builds towers, projectors, HFRE from config keys</td><td>One dimension formula</td></tr>
+    <tr><td><code>vlm_fo1/model/multimodal_encoder/qwen2_5_vl/</code></td><td>Vendored copy of HF’s Qwen2.5-VL modeling code (pinned to transformers 4.50.1)</td><td>Not copied — Qwen3.5 imports from transformers v5 instead</td></tr>
+    <tr><td><code>vlm_fo1/model/multimodal_encoder/qwen2_5_vl_encoder.py</code></td><td>Main vision tower wrapper + multi-level feature monkey patch</td><td><strong>Yes</strong> — new wrapper, simpler</td></tr>
+    <tr><td><code>vlm_fo1/model/multimodal_encoder/davit_aux_encoder.py</code> + <code>davit/</code></td><td>Auxiliary DaViT detection backbone (4-stage pyramid)</td><td>No</td></tr>
+    <tr><td><code>vlm_fo1/model/multimodal_encoder/builder.py</code></td><td>Name-based dispatch to tower classes</td><td><strong>Yes</strong> — add a branch</td></tr>
+    <tr><td><code>vlm_fo1/model/multimodal_visual_prompt_encoder/</code></td><td>HFRE module + SimpleFPN (roi_align, position embeddings, fusion)</td><td>No</td></tr>
+    <tr><td><code>vlm_fo1/model/multimodal_projector/</code></td><td>Projectors: MLP / CAbstractor / TokenPacker glue layers</td><td>No code change; output width follows config</td></tr>
+    <tr><td><code>vlm_fo1/mm_utils.py</code></td><td>Prompt building, tokenization with −200/−300, image prep, output parsing</td><td>Token-id constants to verify</td></tr>
+    <tr><td><code>vlm_fo1/constants.py</code></td><td>Special tokens and placeholder indexes</td><td>Add Qwen3.5 entries</td></tr>
+    <tr><td><code>vlm_fo1/task_templates.py</code></td><td>Ready-made prompts (detection, counting, OCR, captioning…)</td><td>No</td></tr>
+    <tr><td><code>detect_tools/upn/</code></td><td>UPN open-vocabulary box-proposal detector (from ChatRex)</td><td>No</td></tr>
+    <tr><td><code>scripts/</code>, <code>demo/</code></td><td>UPN/SAM3 inference scripts, Gradio demos (incl. video tracking)</td><td>Only <code>model_path</code> strings</td></tr>
+    <tr><td><code>evaluation/</code></td><td>COCO / CountBench evaluation scripts</td><td>No</td></tr>
+    <tr><td><code>requirements.txt</code></td><td>Pins <code>transformers==4.50.1</code>, torch 2.6</td><td><strong>Yes</strong> — v5 upgrade</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="components">Component deep-dives</h2>
+
+<div class="panel accent">
+<h3>The model classes — <span class="filetag">omchat_qwen2_5_vl.py</span></h3>
+<p>This 577-line file is the template you will copy. It defines three classes that sandwich FO1’s additions into HuggingFace’s Qwen2.5-VL:</p>
+<pre><code>OmChatQwen25VLConfig(Qwen2_5_VLConfig)          # adds model_type "omchat_qwen2_5_vl"
+OmChatQwen25VLModel(OmChatMetaModel, Qwen2_5_VLModel)   # decoder + FO1 modules
+OmChatQwen25VLForCausalLM(Qwen2_5_VLForConditionalGeneration, OmChatMetaForCausalLM)</code></pre>
+<p>Multiple inheritance does the trick: <code>OmChatMetaModel</code> (from <span class="filetag">omchat_arch.py</span>) runs first and attaches <code>vision_tower</code>, <code>vision_tower_aux</code>, <code>mm_projector</code>, <code>mm_projector_aux</code> and <code>object_vp_extractor</code> (the HFRE) as submodules — so their weights live inside the same checkpoint and load automatically with <code>from_pretrained()</code>. The last two lines register the custom <code>model_type</code> with transformers’ Auto classes.</p>
+<p>Key methods: <code>encode_images()</code> (main tower + projector), <code>encode_regions()</code> (aux tower + HFRE + aux projector), <code>prepare_inputs_labels_for_qwen2_5_vl_multimodal()</code> (the splice — the longest and most important method), and a <code>forward()</code> that builds embeddings itself and then defers to the parent Qwen forward.</p>
+</div>
+
+<div class="panel accent">
+<h3>The config contract — <span class="filetag">omchat_arch.py</span> + checkpoint <code>config.json</code></h3>
+<p>Nothing is hard-wired to a model size; everything is read from the checkpoint’s <code>config.json</code>. The keys that matter (and who reads them):</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Config key</th><th>Meaning</th><th>Read at</th></tr></thead>
+<tbody>
+<tr><td><code>mm_vision_tower</code></td><td>Name of main tower → dispatch string (“qwen2.5-vl…”)</td><td>encoder/builder.py:16</td></tr>
+<tr><td><code>mm_vision_tower_aux</code></td><td>Name of aux tower (“davit…”)</td><td>encoder/builder.py:34</td></tr>
+<tr><td><code>mm_projector_type</code> / <code>mm_projector_aux_type</code></td><td>Glue layer type (linear / mlpNx_gelu / …)</td><td>projector/builder.py</td></tr>
+<tr><td><code>mm_hidden_size</code></td><td>Main tower output width → projector input</td><td>projector/builder.py</td></tr>
+<tr><td><code>hidden_size</code></td><td>LLM embedding width → projector output</td><td>projector/builder.py</td></tr>
+<tr><td><code>mm_region_hidden_size</code></td><td>HFRE output width → aux projector input</td><td>omchat_arch.py:19</td></tr>
+<tr><td><code>mm_use_vision_tower_region_feature</code></td><td>Whether HFRE also uses main-tower features (enables monkey patch)</td><td>qwen2_5_vl_encoder.py:187</td></tr>
+<tr><td><code>mm_use_region_index_token</code></td><td>Enables the whole region-token path at inference</td><td>mm_utils.py:597</td></tr>
+<tr><td><code>aux_image_size</code>, <code>aux_image_aspect_ratio</code></td><td>DaViT input (768, squash)</td><td>model/builder.py:65-70</td></tr>
+<tr><td><code>image_token_id</code></td><td>Real vocab id written into spliced sequences</td><td>omchat_qwen2_5_vl.py:282</td></tr>
+</tbody></table></div>
+<p>This is why the swap is mostly mechanical: point these keys at Qwen3.5 values and the modules resize themselves.</p>
+</div>
+
+<div class="panel accent">
+<h3>Main tower + monkey patch — <span class="filetag">qwen2_5_vl_encoder.py</span></h3>
+<p><code>Qwen2_5_VlVisionTower</code> wraps the ViT that ships inside Qwen2.5-VL. The interesting part is the monkey patch: Qwen2.5’s ViT uses <em>windowed</em> attention in most layers and full attention in only four (<code>fullatt_block_indexes</code>). The patch replaces the ViT’s <code>forward()</code> with a copy that (a) stores the hidden states at those four layers and (b) un-shuffles the window ordering back to a raster grid, yielding four feature maps of shape <code>[1, C, H, W]</code> per image — the “vision-tower pyramid” the HFRE consumes. This is the most Qwen2.5-specific code in the project, and its complexity exists <em>only because of window attention</em>. Remember that for later: Qwen3.5’s ViT has no windows, so the replacement is simpler.</p>
+</div>
+
+<div class="panel accent">
+<h3>Aux tower, HFRE, projectors</h3>
+<p><strong>DaViT</strong> (<span class="filetag">davit_aux_encoder.py</span>) is a detection-grade backbone producing a classic 4-stage pyramid with channels <code>[256, 512, 1024, 2048]</code> from a fixed 768×768 input. It is loaded from the FO1 checkpoint and knows nothing about Qwen — <strong>completely untouched by the swap</strong>.</p>
+<p><strong>HFRE</strong> (<span class="filetag">hybrid_finegrained_region_encoder.py</span>) is where region tokens are born: <code>roi_align</code> over the DaViT pyramid (concatenated channels) and over the ViT pyramid (boxes rescaled to each tower’s coordinate space), mean-pool each ROI, add sinusoidal embeddings of the box position/size, combine (concat by default), LayerNorm. Pure geometry + torch ops, no Qwen dependency — <strong>untouched</strong>.</p>
+<p><strong>Projectors</strong> (<span class="filetag">multimodal_projector/builder.py</span>) are small MLPs: <code>mm_projector</code> maps main-tower features → LLM width; <code>mm_projector_aux</code> maps HFRE output → LLM width. Their in/out sizes come from config, so the <em>code</em> never changes — but their <em>trained weights</em> are married to Qwen2.5’s embedding space. That is the load-bearing caveat of a no-training swap.</p>
+</div>
+
+<div class="panel accent">
+<h3>Detectors, demos, evaluation</h3>
+<p><span class="filetag">detect_tools/upn/</span> is a vendored copy of UPN from ChatRex — an open-vocabulary proposal generator with deformable-attention CUDA ops (built separately via <code>pip install -v -e .</code> inside <code>detect_tools/upn/ops</code>). <span class="filetag">scripts/inference_with_upn.py</span> and <span class="filetag">…_with_sam3.py</span> chain a detector in front of FO1; <span class="filetag">demo/</span> holds three Gradio apps (plain, +SAM3, +SAM3 video tracking). All of them only talk to FO1 through <code>load_pretrained_model()</code> and <code>prepare_inputs()</code>, so they inherit the swap for free once loading works.</p>
+</div>
+
+<hr>
+
+<p class="eyebrow">Part II</p>
+<h2 id="qwen35" style="margin-top:0.2em">What Qwen3.5 actually is</h2>
+<div class="prose">
+<p>Qwen3.5 (released 16 Feb 2026) is not “Qwen2.5 but newer” — it is a different animal in three ways that matter to this codebase:</p>
+<ul>
+  <li><strong>Natively multimodal.</strong> There is no separate “-VL” variant. Every Qwen3.5 checkpoint (<code>Qwen/Qwen3.5-0.8B</code>, <code>-4B</code>, <code>-9B</code>, <code>-27B</code>, <code>-397B-A17B</code>) is trained from scratch on interleaved text, image and video, with the vision encoder inherited from Qwen3-VL.</li>
+  <li><strong>Hybrid attention decoder.</strong> The text stack interleaves Gated DeltaNet (linear-attention) layers with gated full-attention layers at roughly 3:1 (the Qwen3-Next design), and the larger models are sparse MoE. From the outside it is still a causal LM with a KV-ish cache, so <code>generate()</code> works normally — but it is a different implementation living in transformers ≥ v5.2 as the <code>qwen3_5</code> model family.</li>
+  <li><strong>Cleaner vision tower.</strong> <code>Qwen3_5VisionModel</code> uses full attention in <em>every</em> block (no windows, no <code>fullatt_block_indexes</code>, no window-index shuffling), learned position embeddings with interpolation instead of 2D RoPE, and a single patch merger. Its forward returns both the pre-merge patch features (<code>last_hidden_state</code>) and the merged tokens (<code>pooler_output</code>).</li>
+</ul>
+<p>For your migration, the class inventory in transformers v5 is:</p>
+<pre><code>Qwen3_5Config, Qwen3_5TextConfig, Qwen3_5VisionConfig
+Qwen3_5VisionModel            # the ViT
+Qwen3_5TextModel              # the decoder stack (embed_tokens lives here)
+Qwen3_5Model                  # visual + text, wired together
+Qwen3_5ForCausalLM            # text-only LM head
+Qwen3_5ForConditionalGeneration   # the full multimodal model
+Qwen3_5CausalLMOutputWithPast # output type (carries rope_deltas)</code></pre>
+</div>
+
+<h2 id="compare">Qwen2.5-VL vs Qwen3.5 — the differences this repo feels</h2>
+<div class="tablewrap">
+<table>
+<thead><tr><th></th><th>Qwen2.5-VL (today)</th><th>Qwen3.5 (target)</th><th>Impact here</th></tr></thead>
+<tbody>
+<tr><td>Where the code lives</td><td>Vendored copy in <code>…/multimodal_encoder/qwen2_5_vl/</code>, pinned to transformers 4.50.1</td><td><code>transformers.models.qwen3_5</code>, needs transformers ≥ v5.2</td><td>Import instead of vendor; big dependency bump</td></tr>
+<tr><td>ViT attention</td><td>Windowed, 4 full-attention layers, window-index shuffling</td><td>Full attention every block, raster order throughout</td><td>The 90-line monkey patch shrinks to simple forward hooks</td></tr>
+<tr><td>ViT positions</td><td>2D rotary embedding</td><td>Learned <code>pos_embed</code> + interpolation</td><td>None — internal to the tower</td></tr>
+<tr><td>ViT output</td><td>Merged tokens (plain tensor)</td><td><code>BaseModelOutputWithPooling</code>: patch feats + merged tokens</td><td>Wrapper unpacks <code>.pooler_output</code>; patch feats are a bonus for HFRE</td></tr>
+<tr><td>Decoder</td><td>Dense transformer, standard attention</td><td>Hybrid Gated DeltaNet / full attention (3:1), MoE at scale</td><td>None directly — HF API surface is the same shape</td></tr>
+<tr><td>Rope index</td><td><code>get_rope_index(input_ids, image_grid_thw, video_grid_thw, attention_mask)</code></td><td><code>get_rope_index(input_ids, mm_token_type_ids, image_grid_thw, video_grid_thw, attention_mask)</code></td><td>One call site to update (build <code>mm_token_type_ids</code>)</td></tr>
+<tr><td>Time axis</td><td><code>second_per_grid_ts</code> argument</td><td>Gone (video handled via grid + token types)</td><td>Drop it from the copied <code>forward()</code></td></tr>
+<tr><td>Model IDs</td><td><code>Qwen/Qwen2.5-VL-3B-Instruct</code> …</td><td><code>Qwen/Qwen3.5-4B</code>, <code>-9B</code>, <code>-27B</code>, <code>-397B-A17B</code></td><td>Pick 4B as the like-for-like replacement for the 3B</td></tr>
+<tr><td>Chat format</td><td>ChatML, <code>&lt;|im_start|&gt;</code> id 151644, image pad id 151655</td><td>ChatML-style; ids must be re-verified against the Qwen3.5 tokenizer</td><td>Replace hard-coded ids with tokenizer lookups</td></tr>
+</tbody>
+</table>
+</div>
+
+<hr>
+
+<p class="eyebrow">Part III</p>
+<h2 id="swapmap" style="margin-top:0.2em">What changes, what stays</h2>
+
+<figure>
+  <div class="figscroll">
+  <svg viewBox="0 0 980 330" role="img" aria-label="The same pipeline with parts color-coded: the main vision tower and the language decoder are replaced by Qwen3.5 parts; both projectors are kept as code but need reshaped weights; DaViT, HFRE, the prompt builder and the parser are untouched." style="min-width:840px">
+    <defs>
+      <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+      </marker>
+    </defs>
+    <g font-family="-apple-system,'Segoe UI',system-ui,sans-serif" font-size="12.5">
+      <!-- keep: prompt builder -->
+      <rect x="20" y="40" width="150" height="52" rx="7" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <text x="95" y="62" text-anchor="middle" fill="currentColor" font-weight="600">Prompt builder</text>
+      <text x="95" y="78" text-anchor="middle" fill="currentColor" font-size="10.5" opacity="0.7">verify token ids ⚠</text>
+      <!-- replace: main ViT -->
+      <rect x="20" y="130" width="150" height="52" rx="7" fill="var(--delta-soft)" stroke="var(--delta)" stroke-width="1.6"/>
+      <text x="95" y="152" text-anchor="middle" fill="currentColor" font-weight="600">Main ViT</text>
+      <text x="95" y="168" text-anchor="middle" fill="var(--delta)" font-size="10.5">→ Qwen3_5VisionModel</text>
+      <!-- keep: DaViT -->
+      <rect x="20" y="220" width="150" height="52" rx="7" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <text x="95" y="242" text-anchor="middle" fill="currentColor" font-weight="600">DaViT aux tower</text>
+      <text x="95" y="258" text-anchor="middle" fill="currentColor" font-size="10.5" opacity="0.7">untouched</text>
+      <!-- keep: HFRE -->
+      <rect x="250" y="220" width="150" height="52" rx="7" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <text x="325" y="242" text-anchor="middle" fill="currentColor" font-weight="600">HFRE</text>
+      <text x="325" y="258" text-anchor="middle" fill="currentColor" font-size="10.5" opacity="0.7">untouched</text>
+      <!-- reshape: projectors -->
+      <rect x="250" y="130" width="150" height="52" rx="7" fill="none" stroke="var(--delta)" stroke-width="1.6" stroke-dasharray="6 4"/>
+      <text x="325" y="152" text-anchor="middle" fill="currentColor" font-weight="600">mm_projector(s)</text>
+      <text x="325" y="168" text-anchor="middle" fill="var(--delta)" font-size="10.5">same code, new shapes</text>
+      <!-- replace: decoder -->
+      <rect x="480" y="130" width="170" height="52" rx="7" fill="var(--delta-soft)" stroke="var(--delta)" stroke-width="1.6"/>
+      <text x="565" y="152" text-anchor="middle" fill="currentColor" font-weight="600">LLM decoder</text>
+      <text x="565" y="168" text-anchor="middle" fill="var(--delta)" font-size="10.5">→ Qwen3.5 hybrid stack</text>
+      <!-- keep: parser -->
+      <rect x="480" y="220" width="170" height="52" rx="7" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <text x="565" y="242" text-anchor="middle" fill="currentColor" font-weight="600">Output parser</text>
+      <text x="565" y="258" text-anchor="middle" fill="currentColor" font-size="10.5" opacity="0.7">untouched</text>
+      <!-- keep: detectors -->
+      <rect x="730" y="130" width="150" height="52" rx="7" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <text x="805" y="152" text-anchor="middle" fill="currentColor" font-weight="600">UPN / SAM3</text>
+      <text x="805" y="168" text-anchor="middle" fill="currentColor" font-size="10.5" opacity="0.7">untouched</text>
+      <!-- wiring: loader -->
+      <rect x="730" y="220" width="150" height="52" rx="7" fill="none" stroke="var(--delta)" stroke-width="1.6" stroke-dasharray="6 4"/>
+      <text x="805" y="242" text-anchor="middle" fill="currentColor" font-weight="600">Loader / builders</text>
+      <text x="805" y="258" text-anchor="middle" fill="var(--delta)" font-size="10.5">new dispatch branches</text>
+    </g>
+    <g font-family="-apple-system,'Segoe UI',system-ui,sans-serif" font-size="11">
+      <rect x="20" y="296" width="14" height="14" rx="3" fill="var(--delta-soft)" stroke="var(--delta)" stroke-width="1.4"/>
+      <text x="42" y="308" fill="currentColor">replaced by a Qwen3.5 part</text>
+      <rect x="230" y="296" width="14" height="14" rx="3" fill="none" stroke="var(--delta)" stroke-width="1.4" stroke-dasharray="4 3"/>
+      <text x="252" y="308" fill="currentColor">code kept, shapes / dispatch edited</text>
+      <rect x="490" y="296" width="14" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <text x="512" y="308" fill="currentColor">untouched</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption>The decision in one picture: only the two Qwen-owned blocks are truly replaced. FO1’s own inventions (DaViT path, HFRE, parser, detectors) survive unchanged — that is what “plug-and-play module” means in practice.</figcaption>
+</figure>
+
+<h2 id="steps">Step-by-step migration plan</h2>
+<p class="prose">The strategy is <strong>parallel, not destructive</strong>: keep every Qwen2.5 file working, add Qwen3.5 files alongside, and let the existing name-based dispatch pick between them. Class names below were verified against transformers <code>main</code> (Aug 2026); pin your exact version first and re-check signatures against <em>your installed copy</em> — v5 is still moving.</p>
+
+<div class="step">
+  <div class="stephead"><span class="num">STEP 0</span><h3>Environment — <span class="delta-tag">requirements.txt</span></h3></div>
+  <p>Qwen3.5 needs transformers ≥ v5.2; the repo pins 4.50.1. This is the one genuinely disruptive change: the vendored Qwen2.5 modeling code imports transformers internals that moved in v5, so after upgrading, <em>test whether the old path still imports</em>. If it breaks and you must keep both backbones runnable, use two virtualenvs (one per backbone); if only Qwen3.5 matters for your deliverable, let the old path break gracefully behind its dispatch branch.</p>
+<pre><code># requirements.txt (Qwen3.5 track)
+torch&gt;=2.8            # match your CUDA; transformers v5 needs a recent torch
+transformers&gt;=5.2     # first line with the qwen3_5 model family
+accelerate&gt;=1.6
+timm==1.0.9           # DaViT + projectors still need these
+einops
+flash-attn            # optional; else drop attn_implementation="flash_attention_2"</code></pre>
+</div>
+
+<div class="step">
+  <div class="stephead"><span class="num">STEP 1</span><h3>New tower wrapper — <span class="delta-tag">vlm_fo1/model/multimodal_encoder/qwen3_5_encoder.py</span></h3></div>
+  <p>Copy <code>qwen2_5_vl_encoder.py</code> and simplify. Because Qwen3.5’s ViT is full-attention with no window shuffle, you do <strong>not</strong> port the monkey patch — plain forward hooks on four evenly spaced blocks give the same multi-level pyramid, already in raster order:</p>
+<pre><code>from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
+from transformers import AutoImageProcessor
+
+class Qwen3_5VisionTower(nn.Module):
+    def __init__(self, image_tower, args, delay_load=False,
+                 min_pixels=56*56, max_pixels=2048*2048):
+        super().__init__()
+        self.is_loaded = False
+        self.image_tower_name = image_tower
+        self.use_vision_tower_region_feature = getattr(
+            args, "mm_use_vision_tower_region_feature", False)
+        self.min_pixels, self.max_pixels = min_pixels, max_pixels
+        self.cfg_only = args.vision_config
+        self.load_model(model_path=args.name_or_path)
+
+    def load_model(self, model_path=None, image_size=336, is_train=True):
+        self.image_tower = Qwen3_5VisionModel._from_config(
+            self.cfg_only, torch_dtype=torch.bfloat16)   # weights arrive via from_pretrained
+        self.image_processor = AutoImageProcessor.from_pretrained(
+            model_path or self.image_tower_name,
+            min_pixels=self.min_pixels, max_pixels=self.max_pixels)
+        if self.use_vision_tower_region_feature:
+            self._install_level_hooks()                  # replaces the 2.5 monkey patch
+        self.is_loaded = True
+
+    def _install_level_hooks(self):
+        depth = len(self.image_tower.blocks)
+        self.level_ids = {depth//4 - 1, depth//2 - 1, 3*depth//4 - 1, depth - 1}
+        self._levels = []
+        for i, blk in enumerate(self.image_tower.blocks):
+            if i in self.level_ids:
+                blk.register_forward_hook(
+                    lambda mod, inp, out: self._levels.append(
+                        out[0] if isinstance(out, tuple) else out))
+
+    def forward(self, images, image_grid_thws=[]):
+        feats, grids, multi = [], [], []
+        for i, image in enumerate(images):
+            if not image_grid_thws:
+                image, grid = self.convert_image_format(image)   # same as 2.5 wrapper
+            else:
+                grid = image_grid_thws[i]
+            self._levels = [] if self.use_vision_tower_region_feature else None
+            out = self.image_tower(image.to(self.device, self.dtype),
+                                   grid_thw=grid.to(self.device))
+            feats.append(out.pooler_output.unsqueeze(0).to(self.dtype))  # merged tokens
+            grids.append(grid)
+            if self.use_vision_tower_region_feature:
+                multi.append(self._reshape_levels(grid))  # seq → [1, C, H, W] per level
+        return feats, grids, multi
+
+    @property
+    def hidden_size(self):        # feeds mm_hidden_size consumers
+        return self.config.out_hidden_size</code></pre>
+  <p><code>_reshape_levels</code> is the only real work: each hooked tensor is <code>[seq, C]</code> in raster order, so <code>t.reshape(H, W, C).permute(2, 0, 1).unsqueeze(0)</code> with <code>H, W = grid_thw[0][1:]</code> — no <code>argsort(window_index)</code> gymnastics. Keep the returned structure identical to the 2.5 wrapper (list of 4 maps per image) so the HFRE code path does not change.</p>
+</div>
+
+<div class="step">
+  <div class="stephead"><span class="num">STEP 2</span><h3>New model classes — <span class="delta-tag">vlm_fo1/model/language_model/omchat_qwen3_5.py</span></h3></div>
+  <p>Copy <code>omchat_qwen2_5_vl.py</code> wholesale and rename. The mapping:</p>
+<pre><code>from transformers import Qwen3_5Config, AutoConfig, AutoModelForCausalLM
+from transformers.models.qwen3_5.modeling_qwen3_5 import (
+    Qwen3_5TextModel, Qwen3_5ForConditionalGeneration, Qwen3_5CausalLMOutputWithPast)
+from vlm_fo1.model.multimodal_encoder.qwen3_5_encoder import Qwen3_5VisionTower
+
+class OmChatQwen35Config(Qwen3_5Config):
+    model_type = "omchat_qwen3_5"
+
+class OmChatQwen35Model(OmChatMetaModel, Qwen3_5TextModel):   # ← text stack, like 2.5 used Qwen2_5_VLModel
+    config_class = OmChatQwen35Config
+
+class OmChatQwen35ForCausalLM(Qwen3_5ForConditionalGeneration, OmChatMetaForCausalLM):
+    config_class = OmChatQwen35Config
+    def __init__(self, config, delay_load=True):
+        ...  # same body as the 2.5 file: build OmChatQwen35Model, lm_head, post_init
+
+AutoConfig.register("omchat_qwen3_5", OmChatQwen35Config)
+AutoModelForCausalLM.register(OmChatQwen35Config, OmChatQwen35ForCausalLM)</code></pre>
+  <p>Then sweep the copied body:</p>
+  <ul>
+    <li>Every <code>isinstance(…, Qwen2_5_VlVisionTower)</code> → <code>Qwen3_5VisionTower</code>.</li>
+    <li>In transformers 4.50, <code>Qwen2_5_VLModel</code> <em>was</em> the text decoder. In v5 the equivalent text-only stack is <code>Qwen3_5TextModel</code> (v5’s <code>Qwen3_5Model</code> bundles its own vision tower, which would duplicate FO1’s). Subclassing the text model keeps FO1 the owner of all vision. Consequence: <code>get_rope_index</code> lives on the composite v5 classes, so <strong>copy that one method</strong> into <code>OmChatQwen35ForCausalLM</code> from <code>modeling_qwen3_5.py</code>, or delegate to the parent if your ForConditionalGeneration exposes it — check your installed version, this is the most version-sensitive point of the whole port.</li>
+    <li>The v5 signature needs token types. Where the 2.5 file builds <code>rope_index_kwargs</code> (old line ≈ 449), add:
+<pre><code>mm_token_type_ids = (new_input_ids == self.config.image_token_id).int()
+position_ids, rope_deltas = self.get_rope_index(
+    new_input_ids, mm_token_type_ids,
+    image_grid_thw=image_grid_thws, video_grid_thw=None,
+    attention_mask=attention_mask)</code></pre></li>
+    <li>Delete <code>second_per_grid_ts</code> from <code>forward()</code> / <code>prepare_inputs_for_generation()</code> — it no longer exists in v5.</li>
+    <li>Output type annotation → <code>Qwen3_5CausalLMOutputWithPast</code>.</li>
+  </ul>
+  <p>The splice method (<code>prepare_inputs_labels_for_…</code>), <code>encode_images</code>, and <code>encode_regions</code> transfer essentially unchanged — they operate on embeddings and the wrapper interfaces you preserved in Step 1.</p>
+</div>
+
+<div class="step">
+  <div class="stephead"><span class="num">STEP 3</span><h3>Dispatch branches — three small edits</h3></div>
+  <p>The project routes everything by substring-matching names. Add the Qwen3.5 branches:</p>
+<pre><code># vlm_fo1/model/multimodal_encoder/builder.py  (after the 2.5 branch, line ~16)
+if "qwen3.5" in vision_tower_name.lower():
+    from .qwen3_5_encoder import Qwen3_5VisionTower
+    return Qwen3_5VisionTower(vision_tower_name, args=vision_tower_cfg, **kwargs)
+
+# vlm_fo1/model/builder.py  (mirror the 'qwen2.5-vl' block, lines 39-47 and 63-75)
+elif "qwen3.5" in model_path.lower() or "qwen3_5" in model_path.lower():
+    model, loading_info = OmChatQwen35ForCausalLM.from_pretrained(
+        model_path, low_cpu_mem_usage=True, output_loading_info=True,
+        attn_implementation="flash_attention_2", **kwargs)
+    # …and reuse the same aux-tower loading block below
+
+# vlm_fo1/model/__init__.py — export the new classes next to the 2.5 ones</code></pre>
+  <p>Also mirror the special-token patch in <span class="filetag">mm_utils.py:552</span>: the <code>'qwen2.5-vl' in model_name</code> check that swaps in <code>&lt;|vision_start|&gt;/&lt;|vision_end|&gt;</code> must also fire for <code>qwen3.5</code> names. Name your checkpoint folder so both existing substring checks match, e.g. <code>VLM-FO1_Qwen3.5-4B</code> (contains <code>vlm-fo1</code> ✓ and <code>qwen3.5</code> ✓).</p>
+</div>
+
+<div class="step">
+  <div class="stephead"><span class="num">STEP 4</span><h3>Dimension formula — <span class="filetag">omchat_arch.py:26</span></h3></div>
+  <p>The HFRE is told how wide the main-tower pyramid is: <code>hidden_size * 4</code> (four gathered layers × ViT width). That formula still holds if you hook four levels in Step 1 — just be aware Qwen3.5’s ViT <code>hidden_size</code> differs from Qwen2.5’s 1280, and the value flows from <code>vision_config</code> automatically. If you hook a different number of levels, change the multiplier here to match.</p>
+</div>
+
+<div class="step">
+  <div class="stephead"><span class="num">STEP 5</span><h3>Tokens and prompt format — <span class="filetag">constants.py</span>, <span class="filetag">mm_utils.py</span></h3></div>
+  <p><code>make_message_context()</code> hard-codes ChatML ids <code>151644/151645</code> (<span class="filetag">mm_utils.py:483-484, 573, 581</span>) and constants.py pins <code>&lt;|image_pad|&gt;</code> = 151655. Qwen3.5 keeps a ChatML-style template but its vocabulary is its own — <strong>never trust inherited ids</strong>. Replace the literals with startup lookups:</p>
+<pre><code>IM_START_ID = tokenizer.convert_tokens_to_ids("&lt;|im_start|&gt;")
+IM_END_ID   = tokenizer.convert_tokens_to_ids("&lt;|im_end|&gt;")
+IMAGE_PAD_ID = model.config.image_token_id     # already config-driven at the splice</code></pre>
+  <p>Verify with a five-line REPL session against the real Qwen3.5 tokenizer before wiring anything. The placeholder scheme (−200 / −300) is FO1-internal and needs no change. Also confirm <code>AutoTokenizer.from_pretrained(path, use_fast=False)</code> works for Qwen3.5 under v5 (<span class="filetag">model/builder.py:37</span>) — if the slow tokenizer is unavailable, drop <code>use_fast=False</code> and re-test the <code>allowed_special</code> kwargs in <code>make_message_context</code>.</p>
+</div>
+
+<div class="step">
+  <div class="stephead"><span class="num">STEP 6</span><h3>Assemble a runnable checkpoint — weight surgery, no training</h3></div>
+  <p>There is no trained FO1-on-Qwen3.5 checkpoint, so build a composite folder that <em>loads</em>. One throwaway script:</p>
+<pre><code># scratch/make_fo1_qwen35_checkpoint.py — run once on CPU
+base = Qwen3_5ForConditionalGeneration.from_pretrained("Qwen/Qwen3.5-4B")
+fo1  = load_safetensors_dir("resources/VLM-FO1_Qwen2.5-VL-3B-v01")
+
+sd = {}
+# 1. Qwen3.5 decoder → the FO1 prefix for the text stack
+sd.update(remap(base.model.language_model.state_dict(), to="model."))
+sd["lm_head.weight"] = base.lm_head.weight
+# 2. Qwen3.5 ViT → the tower wrapper's prefix
+sd.update(remap(base.model.visual.state_dict(), to="model.vision_tower.image_tower."))
+# 3. FO1's own modules, carried over verbatim (Qwen-independent)
+for k, v in fo1.items():
+    if k.startswith(("model.vision_tower_aux.", "model.object_vp_extractor.")):
+        sd[k] = v
+    # projectors: copy ONLY if shapes match the new hidden sizes — else skip
+    if k.startswith(("model.mm_projector.", "model.mm_projector_aux.")) \
+       and shapes_match(k, v, new_config):
+        sd[k] = v
+save_safetensors(sd, "resources/VLM-FO1_Qwen3.5-4B/")</code></pre>
+  <p>Then write the folder’s <code>config.json</code>: start from <code>Qwen/Qwen3.5-4B</code>’s config, set <code>model_type: "omchat_qwen3_5"</code>, <code>architectures: ["OmChatQwen35ForCausalLM"]</code>, and copy every <code>mm_*</code>, <code>aux_image_*</code> key from the FO1 checkpoint’s config, updating <code>mm_hidden_size</code> (= new ViT <code>out_hidden_size</code>) and leaving <code>hidden_size</code> to the Qwen3.5 base. Copy the Qwen3.5 tokenizer + preprocessor files in too. If projector shapes don’t match (they won’t: 2048-wide Qwen2.5-3B vs the 4B’s width), those layers initialize randomly — the pipeline still runs, which is exactly the deliverable. Exact parameter prefixes: print a few keys of the FO1 safetensors and of your new model’s <code>state_dict()</code> and align them — five minutes of inspection beats guessing.</p>
+</div>
+
+<div class="step">
+  <div class="stephead"><span class="num">STEP 7</span><h3>Point the entry scripts at it</h3></div>
+  <p>Change <code>model_path</code> in <span class="filetag">inference.py:14</span> (and later the scripts/demos) to <code>./resources/VLM-FO1_Qwen3.5-4B</code>. Nothing else in those files changes.</p>
+</div>
+
+<h2 id="smoke">Smoke-test checklist (in order — each catches a different class of mistake)</h2>
+<ul class="checklist">
+  <li><code>python -c "from transformers.models.qwen3_5 import modeling_qwen3_5"</code> — environment is really on v5 with the family present.</li>
+  <li>Tokenizer REPL: confirm <code>&lt;|im_start|&gt;</code>/<code>&lt;|im_end|&gt;</code>/image-pad ids for Qwen3.5; fix Step 5 constants.</li>
+  <li><code>load_pretrained_model("./resources/VLM-FO1_Qwen3.5-4B")</code> — checkpoint loads; read the <code>loading_info</code> printout: <em>missing keys</em> should only be projectors you deliberately skipped; <em>unexpected keys</em> mean your prefixes in Step 6 are wrong.</li>
+  <li>Text-only prompt (no image) through <code>generate()</code> — decoder + tokenizer path works.</li>
+  <li>Image, no boxes — main tower, projector, splice, rope index all fire.</li>
+  <li><code>python inference.py</code> with the demo boxes — full region path: DaViT, hooks, HFRE, aux projector. Success = it runs end-to-end and produces <em>parseable</em> output; sensible detections are not expected without retraining.</li>
+</ul>
+
+<hr>
+
+<p class="eyebrow">Part IV</p>
+<h2 id="nofinetune" style="margin-top:0.2em">Why “no fine-tuning” makes sense — and what to say about results</h2>
+<div class="panel delta prose">
+<p>The pretrained FO1 checkpoint contains three kinds of weights: the Qwen2.5-VL backbone (frozen from Alibaba), FO1’s perception modules (DaViT, HFRE — largely Qwen-independent), and the <strong>projectors</strong>, which were trained specifically to translate visual features into <em>Qwen2.5’s</em> embedding space. Swap the backbone and that translation is addressed to a reader who no longer lives there: Qwen3.5’s embedding space has a different width and different geometry.</p>
+<p>So the honest framing of your deliverable — and this is a normal, legitimate engineering milestone — is: <strong>the architectural integration.</strong> The pipeline loads Qwen3.5, images flow through both towers, region tokens are spliced, generation runs, output parses. Answer <em>quality</em> is expected to be degraded until someone reruns the paper’s two-stage alignment training, which is precisely the part you were told not to do. Say that sentence to whoever reviews your work and you will sound like you understood the assignment — because you did.</p>
+</div>
+
+<h2 id="glossary">Glossary</h2>
+<div class="tablewrap">
+<table>
+<tbody>
+<tr><td class="mono">VLM</td><td>Vision-language model — an LLM that also accepts images.</td></tr>
+<tr><td class="mono">vision tower</td><td>The image-encoder half of a VLM (a Vision Transformer here).</td></tr>
+<tr><td class="mono">region token</td><td>One embedding vector summarizing the content of one bounding box, injected into the prompt like a word.</td></tr>
+<tr><td class="mono">HFRE</td><td>Hybrid Fine-grained Region Encoder — FO1’s module that builds region tokens from two feature pyramids via roi_align.</td></tr>
+<tr><td class="mono">roi_align</td><td>Torchvision op that crops a feature map to a box and resamples it to a fixed grid.</td></tr>
+<tr><td class="mono">projector</td><td>Small trained MLP translating encoder features into the LLM’s embedding width.</td></tr>
+<tr><td class="mono">monkey patch</td><td>Replacing a method on a class at runtime — here, the ViT forward, to expose internal features.</td></tr>
+<tr><td class="mono">M-RoPE</td><td>Qwen’s multimodal rotary position encoding: separate position axes for time, height, width.</td></tr>
+<tr><td class="mono">grid_thw</td><td>Per-image (temporal, height, width) patch counts; drives token counts and positions.</td></tr>
+<tr><td class="mono">UPN / SAM3</td><td>External detectors used to propose candidate boxes for FO1 to reason over.</td></tr>
+<tr><td class="mono">Gated DeltaNet</td><td>Linear-attention layer type used in 3 of every 4 Qwen3.5 decoder layers.</td></tr>
+<tr><td class="mono">MoE</td><td>Mixture-of-Experts — only a fraction of weights active per token (e.g. 397B-A17B = 17B active).</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="sources">Sources</h2>
+<ul class="footnote">
+  <li>VLM-FO1 paper — <a href="https://arxiv.org/abs/2509.25916">arxiv.org/abs/2509.25916</a>; upstream repo — <a href="https://github.com/om-ai-lab/VLM-FO1">github.com/om-ai-lab/VLM-FO1</a>; checkpoint — <a href="https://huggingface.co/omlab/VLM-FO1_Qwen2.5-VL-3B-v01">omlab/VLM-FO1_Qwen2.5-VL-3B-v01</a></li>
+  <li>Qwen3.5 in transformers — <a href="https://huggingface.co/docs/transformers/main/model_doc/qwen3_5">model doc</a>, <a href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5/modeling_qwen3_5.py">modeling_qwen3_5.py</a> (class names and signatures cited above were read from this file, Aug 2026)</li>
+  <li>Qwen3.5 checkpoints — <a href="https://huggingface.co/Qwen/Qwen3.5-4B">Qwen/Qwen3.5-4B</a>, <a href="https://huggingface.co/Qwen/Qwen3.5-27B">Qwen/Qwen3.5-27B</a>; transformers ≥ v5.2 requirement noted in <a href="https://github.com/NVIDIA/TensorRT-LLM/issues/12321">TensorRT-LLM #12321</a></li>
+  <li>Qwen2.5-VL technical report — <a href="https://arxiv.org/pdf/2502.13923">arxiv.org/pdf/2502.13923</a>; Qwen3-VL technical report (vision encoder lineage) — <a href="https://arxiv.org/pdf/2511.21631">arxiv.org/pdf/2511.21631</a></li>
+</ul>
+
+<p class="footnote">Generated from a full read of the repository at commit <span class="mono">3238be7</span> on branch <span class="mono">claude/qwen-to-35-docs-9b0djj</span>, August 2026. Line numbers reference that commit.</p>
+
+</div>
