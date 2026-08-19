@@ -13,6 +13,12 @@ DEFAULT_IM_END_TOKEN = "<im_end>"
 QWEN2_5_VL_IMAGE_TOKEN = "<|image_pad|>"
 QWEN2_5_VL_IMAGE_TOKEN_INDEX = 151655
 
+# For Qwen3_5. The image pad token keeps the same surface form, but never
+# trust inherited ids across tokenizer generations: the real id is read from
+# the checkpoint config (config.image_token_id) at the splice, and chat ids
+# are looked up from the tokenizer in mm_utils.
+QWEN3_5_IMAGE_TOKEN = "<|image_pad|>"
+
 # For regions
 DEFAULT_REGION_TOKEN = "<region<i>>"
 DEFAULT_REGION_FEATURE_TOKEN = "<regionfeat>"

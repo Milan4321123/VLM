@@ -569,8 +569,10 @@ def prepare_inputs(model_name, model, image_processors, tokenizer, messages, dev
     Returns:
         dict: ready-to-use argument dict for model.generate().
     """
-    # For Qwen2.5-VL, patch vision special tokens globally.
-    if 'qwen2.5-vl' in model_name.lower() or 'qwen2_5_vl' in model_name.lower():
+    # For Qwen-family backbones, patch vision special tokens globally.
+    _name = model_name.lower()
+    if ('qwen2.5-vl' in _name or 'qwen2_5_vl' in _name
+            or 'qwen3.5' in _name or 'qwen3_5' in _name):
         global DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
         DEFAULT_IM_START_TOKEN = "<|vision_start|>"
         DEFAULT_IM_END_TOKEN = "<|vision_end|>"
