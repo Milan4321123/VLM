@@ -40,6 +40,7 @@ For more details, check out our **[paper](https://arxiv.org/abs/2509.25916)**
 
 ## 📰 Update News
 
+- **2026-08-19** — Added experimental support for the **Qwen3.5** backbone (architecture only, no retraining yet). See [Using the Qwen3.5 backbone](#using-the-qwen35-backbone-experimental).
 - **2026-03-12** — We are excited to announce that our models are now available on [ModelScope](https://modelscope.cn/models/Om_AI_Lab/VLM-FO1_Qwen2.5-VL-3B-v01)!
 - **2025-11-28** — We released a new [video tracking demo](#6-inference-with-sam3--vlm-fo1-video-tracking-gradio-demo) that combines **SAM3 video tracking** with **VLM-FO1**, enabling interactive object detection and tracking across video frames with complex natural language prompts.
 - **2025-11-21** — We released a new demo that integrates **[SAM3](https://github.com/facebookresearch/sam3)** with **VLM-FO1**, enabling stronger segmentation fidelity and more reliable detection under complex, compositional label prompts. Check this section [Inference with SAM3 + VLM-FO1 Gradio Demo](#5-inference-with-sam3--vlm-fo1-gradio-demo) about how to run it. Or try the [huggingface demo](https://huggingface.co/spaces/P3ngLiu/SAM3_VLM-FO1)
@@ -87,6 +88,7 @@ If you are interested in our research, we welcome you to explore our other wonde
   - Inference with Gradio Demo
   - Inference with SAM3 + VLM-FO1 Gradio Demo
   - Inference with SAM3 + VLM-FO1 Video Tracking Gradio Demo
+- Using the Qwen3.5 backbone (experimental)
 - Task Templates
 - Evaluation
 - Citation
@@ -253,6 +255,22 @@ This demo extends the capabilities to video:
 2.  **Detection**: Use VLM-FO1 + SAM3 to identify objects with complex text prompts on the selected frame.
 3.  **Tracking**: Propagate the segmentation masks forward through the video using SAM3's tracker.
 
+
+## Using the Qwen3.5 backbone (experimental)
+
+The original FO1 checkpoints are built on Qwen2.5-VL. The codebase now also supports Qwen3.5 as the base VLM: a new vision tower wrapper (`vlm_fo1/model/multimodal_encoder/qwen3_5_encoder.py`) and model classes (`vlm_fo1/model/language_model/omchat_qwen3_5.py`) plug into the same HFRE / region-token pipeline. A full walkthrough of the architecture and the port lives in `docs/fo1-qwen35-guide.html`.
+
+A few things to know:
+
+- Qwen3.5 needs `transformers >= 5.2`, while the vendored Qwen2.5-VL code needs `transformers == 4.50.1`. The package imports whichever backbone your installed transformers supports, so use separate environments if you need both.
+- There is no trained FO1-on-Qwen3.5 checkpoint yet. `scripts/make_fo1_qwen35_checkpoint.py` assembles a runnable one by combining a Qwen3.5 base with the FO1 perception modules (DaViT + HFRE). Projector weights whose shapes no longer match are re-initialized, so expect degraded answer quality until the projectors are realigned by training.
+- Checkpoint folders must keep both `vlm-fo1` and `qwen3.5` in their name (e.g. `VLM-FO1_Qwen3.5-4B`) — model loading and prompt building dispatch on the path string.
+
+```bash
+python scripts/make_fo1_qwen35_checkpoint.py --base Qwen/Qwen3.5-4B \
+    --fo1 resources/VLM-FO1_Qwen2.5-VL-3B-v01 --out resources/VLM-FO1_Qwen3.5-4B
+python scripts/smoke_test_qwen35.py            # tiny random-weight wiring test, no download needed
+```
 
 ## 📝 Task Templates
 
