@@ -81,12 +81,14 @@ If you are interested in our research, we welcome you to explore our other wonde
 ## 📋 Table of Contents
 
 - Installation
+- Run with Docker
 - Quick Start
   - Inference with Provided Bounding Boxes
   - Inference with Object Detector
   - Inference with Gradio Demo
   - Inference with SAM3 + VLM-FO1 Gradio Demo
   - Inference with SAM3 + VLM-FO1 Video Tracking Gradio Demo
+  - Command-line Inference with a Custom Prompt
 - Task Templates
 - Evaluation
 - Citation
@@ -150,6 +152,94 @@ display(Image.open("/content/VLM/demo/vlm_fo1_result.jpg"))
 ```
 
 The first run downloads the VLM-FO1 and Qwen3.5 checkpoints. Even with `--load-4bit`, large images or long generations can push past the T4's 16 GB. The `--load-4bit`/`--load-8bit` flags need `bitsandbytes`, which `requirements-colab.txt` already includes; for a local GPU setup install it separately. The current 2048-to-1024 Qwen3.5 bridge and newly added region-token embeddings require training for reliable grounding quality — see `docs/qwen35_migration.md`.
+Additional notes:
+
+- The model is loaded with `attn_implementation="flash_attention_2"`, so install [flash-attn](https://github.com/Dao-AILab/flash-attention) as well (a prebuilt wheel matching torch 2.6 / CUDA 12 / your Python version from the flash-attention releases page installs in seconds). If `flash_attn` is missing, the model falls back to `sdpa` and prints a warning; `VLM_FO1_ATTN_IMPL=flash_attention_2|sdpa|eager` overrides the choice.
+- The Gradio demo and `cli.py` use UPN for object proposals, which needs the CUDA op built in `detect_tools/upn/ops` (see [Inference with UPN](#option-a-inference-with-upn)).
+- Run the scripts from the repository root with the root on the module path, e.g. `PYTHONPATH=. python demo/gradio_demo.py`.
+- If you do not want to set any of this up by hand, use the Docker image below.
+
+## 🐳 Run with Docker
+
+The repository ships a `Dockerfile`, a `docker-compose.yml` and a prompt-driven command-line script (`cli.py`), so the complete pipeline (UPN proposals + VLM-FO1) runs in a container without any manual environment setup.
+
+### Prerequisites
+
+- An NVIDIA GPU with roughly 16 GB of memory. The bundled flash-attn wheel needs an Ampere or newer GPU (RTX 30xx/40xx, A10, A100, L4, H100, ...); on older GPUs start the container with `VLM_FO1_ATTN_IMPL=sdpa`.
+- NVIDIA driver 550 or newer (CUDA 12.4), Docker 24+ with Compose v2, and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+- Around 30 GB of free disk for the image plus the checkpoints.
+
+### 1) Build the image
+
+```bash
+docker compose build
+# or without Compose:
+docker build -t vlm-fo1 .
+```
+
+The build installs PyTorch 2.6 (CUDA 12.4), the project requirements, a prebuilt flash-attn wheel and compiles the UPN deformable-attention CUDA op. No GPU is needed at build time. To shorten the build, restrict the CUDA architectures to your GPU, e.g. `docker build --build-arg TORCH_CUDA_ARCH_LIST="8.6" -t vlm-fo1 .`.
+
+### 2) Model weights
+
+Weights are not baked into the image:
+
+- The UPN checkpoint is downloaded automatically into `./resources/upn_large.pth` (a host folder mounted into the container) the first time the container starts.
+- The VLM-FO1 checkpoint is fetched from the Hugging Face Hub on first use and cached in the `hf-cache` Docker volume. To use a local copy instead, place it under `./resources/VLM-FO1_Qwen2.5-VL-3B-v01` or set `VLM_FO1_MODEL` to another path or Hub id. Export `HF_TOKEN` in your shell if your Hub account requires it.
+
+### 3) Run inference with your own prompt
+
+```bash
+docker compose run --rm vlm-fo1 python cli.py \
+    --image demo/demo_image.jpg \
+    --prompt "Please detect orange in this image. Answer the question with object indexes." \
+    --output outputs/orange.jpg --json outputs/orange.json
+```
+
+The command prints a JSON document with the exact prompt that was used, the raw model answer and the selected boxes, and writes the annotated image to `./outputs/` on the host. Instead of a verbatim `--prompt`, a task template can be filled in with `--task` and `--target`:
+
+```bash
+docker compose run --rm vlm-fo1 python cli.py \
+    --image demo/demo_image_01.jpg --task count --target "airplane with only one propeller"
+```
+
+Available tasks: `od`, `count`, `ocr`, `brief-caption`, `detailed-caption`, `reason`, `grounding`, `all` (see `python cli.py --help`). To run on your own pictures, mount a folder and refer to it inside the container:
+
+```bash
+docker compose run --rm -v /path/to/images:/data vlm-fo1 python cli.py \
+    --image /data/photo.jpg --prompt "Please detect person, dog in this image. Answer the question with object indexes."
+```
+
+Pass `--boxes '[[x1,y1,x2,y2], ...]'` to use your own region proposals instead of UPN.
+
+Without Compose:
+
+```bash
+docker run --rm --gpus all \
+    -v "$PWD/resources:/app/resources" -v "$PWD/outputs:/app/outputs" \
+    -v vlm-fo1-hf:/root/.cache/huggingface \
+    vlm-fo1 python cli.py --image demo/demo_image.jpg --prompt "Please detect orange in this image. Answer the question with object indexes."
+```
+
+### 4) Run the Gradio demo
+
+```bash
+docker compose up
+```
+
+Then open http://localhost:8000. The same image can be started with `docker run --rm --gpus all -p 8000:8000 -v "$PWD/resources:/app/resources" -v vlm-fo1-hf:/root/.cache/huggingface vlm-fo1`.
+
+### Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `VLM_FO1_MODEL` | `omlab/VLM-FO1_Qwen2.5-VL-3B-v01` | VLM-FO1 checkpoint: Hub id or path inside the container |
+| `UPN_CKPT` | `/app/resources/upn_large.pth` | UPN checkpoint path (downloaded if missing) |
+| `SKIP_UPN_DOWNLOAD` | `0` | Set to `1` to skip the automatic UPN download |
+| `VLM_FO1_ATTN_IMPL` | auto (`flash_attention_2` if installed, else `sdpa`) | Attention backend |
+| `HF_TOKEN` | unset | Hugging Face token, forwarded from your shell when set |
+| `PORT` | `8000` | Port of the Gradio demo inside the container |
+
+The SAM3 demos (`demo/gradio_demo_with_sam3*.py`, `scripts/inference_with_sam3.py`) are not part of the image because SAM3 must be installed from its own repository with gated checkpoints; extend the Dockerfile if you need them.
 
 ## 🚀 Quick Start
 
@@ -259,6 +349,19 @@ This demo extends the capabilities to video:
 2.  **Detection**: Use VLM-FO1 + SAM3 to identify objects with complex text prompts on the selected frame.
 3.  **Tracking**: Propagate the segmentation masks forward through the video using SAM3's tracker.
 
+
+### 7) Command-line Inference with a Custom Prompt
+
+`cli.py` runs the full pipeline (UPN proposals + VLM-FO1) on one image with any prompt and prints the result as JSON:
+
+```bash
+python cli.py --image demo/demo_image.jpg \
+    --prompt "Please detect orange in this image. Answer the question with object indexes."
+
+python cli.py --image demo/demo_image_01.jpg --task count --target "airplane with only one propeller"
+```
+
+The annotated image is written to `outputs/<image name>_result.jpg` (change with `--output`), `--json` also saves the JSON result, and `--boxes` supplies your own proposals instead of UPN. See `python cli.py --help` for all options and the [Docker section](#-run-with-docker) for running it in a container.
 
 ## 📝 Task Templates
 

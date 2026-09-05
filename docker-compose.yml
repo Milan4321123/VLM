@@ -1,0 +1,32 @@
+services:
+  vlm-fo1:
+    build:
+      context: .
+      # Trim to your GPU to speed up the build, e.g. "8.6" for RTX 30xx, "8.9" for RTX 40xx / L4, "9.0" for H100.
+      args:
+        TORCH_CUDA_ARCH_LIST: "7.0;7.5;8.0;8.6;8.9;9.0+PTX"
+    image: vlm-fo1:latest
+    ports:
+      - "8000:8000"
+    environment:
+      # Hub id or a path inside the container (mount local weights under ./resources).
+      - VLM_FO1_MODEL=${VLM_FO1_MODEL:-omlab/VLM-FO1_Qwen2.5-VL-3B-v01}
+      - UPN_CKPT=/app/resources/upn_large.pth
+      # Forwarded from your shell only when set.
+      - HF_TOKEN
+      - VLM_FO1_ATTN_IMPL
+    volumes:
+      - ./resources:/app/resources
+      - ./outputs:/app/outputs
+      - hf-cache:/root/.cache/huggingface
+    shm_size: "2gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  hf-cache:

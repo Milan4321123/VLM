@@ -1,0 +1,20 @@
+.git
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose.yml
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.egg-info
+# Weights and outputs are mounted at run time, never baked into the image.
+resources/
+outputs/
+*.pth
+*.safetensors
+*.bin
+*.ckpt
+# SAM3 is not installed in the image, so its video examples are not needed.
+demo/sam3_video_examples/
+# Unreferenced prebuilt extension; the op is compiled during the build.
+detect_tools/upn/_C.cpython-310-x86_64-linux-gnu.so

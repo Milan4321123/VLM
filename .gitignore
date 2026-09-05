@@ -33,3 +33,9 @@ ENV/
 
 # Mac OS
 .DS_Store
+
+# Model weights and inference outputs
+resources/
+outputs/
+*.pth
+*.safetensors
