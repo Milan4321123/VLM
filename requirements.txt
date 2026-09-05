@@ -13,3 +13,9 @@ scikit-image
 eva-decord
 scikit-learn
 matplotlib
+tqdm
+# UPN object proposals (also listed in detect_tools/upn/requirements.txt)
+mmengine==0.8.2
+# flash-attn is used by default (attn_implementation="flash_attention_2"); install a
+# prebuilt wheel from https://github.com/Dao-AILab/flash-attention/releases that matches
+# torch 2.6 / CUDA 12 / your Python. Without it the model falls back to sdpa.

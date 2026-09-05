@@ -35,7 +35,10 @@ def get_extensions():
 
     # import ipdb; ipdb.set_trace()
 
-    if torch.cuda.is_available() and CUDA_HOME is not None:
+    # FORCE_CUDA=1 allows building on a machine without a visible GPU (e.g. inside
+    # `docker build`); set TORCH_CUDA_ARCH_LIST to choose the target architectures.
+    force_cuda = os.getenv("FORCE_CUDA", "0") == "1"
+    if (torch.cuda.is_available() or force_cuda) and CUDA_HOME is not None:
         extension = CUDAExtension
         sources += source_cuda
         define_macros += [("WITH_CUDA", None)]
@@ -46,7 +49,7 @@ def get_extensions():
             "-D__CUDA_NO_HALF2_OPERATORS__",
         ]
     else:
-        raise NotImplementedError('Cuda is not availabel')
+        raise NotImplementedError('CUDA is not available (set FORCE_CUDA=1 to build without a GPU present)')
 
     sources = [os.path.join(extensions_dir, s) for s in sources]
     include_dirs = [extensions_dir]

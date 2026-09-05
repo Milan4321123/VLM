@@ -362,8 +362,15 @@ def launch_demo():
     return demo
 
 if __name__ == "__main__":
-    model_path = './resources/VLM-FO1_Qwen2.5-VL-3B-v01' 
-    upn_ckpt_path = "./resources/upn_large.pth" 
+    # Local checkpoint under ./resources if present, otherwise the Hugging Face Hub id.
+    # Override with VLM_FO1_MODEL / UPN_CKPT / PORT (used by the Docker image).
+    local_model_dir = './resources/VLM-FO1_Qwen2.5-VL-3B-v01'
+    model_path = os.environ.get(
+        "VLM_FO1_MODEL",
+        local_model_dir if os.path.isdir(local_model_dir) else 'omlab/VLM-FO1_Qwen2.5-VL-3B-v01',
+    )
+    upn_ckpt_path = os.environ.get("UPN_CKPT", "./resources/upn_large.pth")
+    server_port = int(os.environ.get("PORT", "8000"))
     tokenizer, model, image_processors = load_pretrained_model(
         model_path=model_path,
         device="cuda:0",
@@ -371,4 +378,4 @@ if __name__ == "__main__":
     upn_model = UPNWrapper(upn_ckpt_path)
 
     demo = launch_demo()
-    demo.launch(server_name="0.0.0.0", share=False, server_port=8000, debug=False)
+    demo.launch(server_name="0.0.0.0", share=False, server_port=server_port, debug=False)
