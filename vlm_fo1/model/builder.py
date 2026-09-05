@@ -8,6 +8,7 @@ from vlm_fo1.model import *
 from vlm_fo1.model.language_model.qwen35_fo1_wrapper import Qwen35FO1InferenceWrapper
 from safetensors.torch import load_file
 import os
+from vlm_fo1.attn_utils import get_attn_implementation
 
 
 DEFAULT_QWEN35_LLM = "Qwen/Qwen3.5-0.8B"
@@ -174,7 +175,7 @@ def load_pretrained_model(
             model_path,
             low_cpu_mem_usage=True,
             output_loading_info=True,
-            attn_implementation="sdpa",
+            attn_implementation=get_attn_implementation(),
             **kwargs
         )
         # print(f'OmChatQwen25VLForCausalLM loading_info: {loading_info}')

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from vlm_fo1.model.multimodal_encoder.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel
+from vlm_fo1.attn_utils import get_attn_implementation
 from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
 from torchvision.transforms import ToPILImage
 
@@ -214,10 +215,10 @@ class Qwen2_5_VlVisionTower(nn.Module):
         Actually load Qwen2.5 Vision Tower backbone and processor.
         Sets up the image tower and patch feed pipeline.
         """
-        # SDPA works on standard Colab GPUs without the optional flash-attn package.
+        # flash_attention_2 when flash-attn is installed, otherwise SDPA (VLM_FO1_ATTN_IMPL overrides).
         self.image_tower = Qwen2_5_VisionTransformerPretrainedModel._from_config(
             self.cfg_only,
-            attn_implementation="sdpa",
+            attn_implementation=get_attn_implementation(),
             torch_dtype=_vision_tower_dtype(),
         )
         # print(f'Qwen2_5_VlVisionTower loading_info: {loading_info}')
