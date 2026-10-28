@@ -1,0 +1,12 @@
+{
+  "platform": "Darwin/arm64",
+  "python": "3.12.3",
+  "versions": {
+    "torch": "2.6.0",
+    "torchvision": "0.21.0",
+    "transformers": "5.2.0",
+    "gradio": "5.49.1"
+  },
+  "docker_vm_running": false,
+  "omp_num_threads": 2
+}

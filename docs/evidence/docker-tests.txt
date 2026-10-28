@@ -1,0 +1,8 @@
+...............................................                          [100%]
+=============================== warnings summary ===============================
+../usr/local/lib/python3.10/site-packages/timm/models/layers/__init__.py:48
+  /usr/local/lib/python3.10/site-packages/timm/models/layers/__init__.py:48: DeprecationWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+    warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", DeprecationWarning)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+47 passed, 1 warning in 34.95s

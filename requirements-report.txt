@@ -1,0 +1,4 @@
+# Optional: rebuilding and visually checking the report; not needed for inference.
+reportlab==5.0.1
+pymupdf==1.28.2
+pypdf==6.18.1

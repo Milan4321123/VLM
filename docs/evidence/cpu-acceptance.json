@@ -1,0 +1,76 @@
+{
+  "prompt": "Please detect orange in this image. Answer the question with object indexes.",
+  "proposal_source": "user",
+  "num_proposals": 7,
+  "proposals": [
+    [
+      161.0,
+      11.0,
+      292.0,
+      127.0
+    ],
+    [
+      268.0,
+      61.0,
+      428.0,
+      226.0
+    ],
+    [
+      12.0,
+      100.0,
+      140.0,
+      227.0
+    ],
+    [
+      205.0,
+      188.0,
+      332.0,
+      320.0
+    ],
+    [
+      326.0,
+      202.0,
+      478.0,
+      357.0
+    ],
+    [
+      136.0,
+      106.0,
+      269.0,
+      233.0
+    ],
+    [
+      25.0,
+      206.0,
+      200.0,
+      383.0
+    ]
+  ],
+  "raw_output": "Based",
+  "detections": [],
+  "model": {
+    "vision_checkpoint": "resources/VLM-FO1-3B-v01",
+    "decoder_checkpoint": "Qwen/Qwen3.5-0.8B"
+  },
+  "device": "cpu",
+  "seed": 0,
+  "do_sample": false,
+  "max_new_tokens": 1,
+  "bridge_is_trained": false,
+  "inference_status": {
+    "backend": "fo1_hfre_qwen35",
+    "fine_tuning_performed": false,
+    "bridge_seed": 0,
+    "bridge_state_loaded": false,
+    "bridge_alignment": "untrained",
+    "region_token_alignment": "untrained",
+    "grounding_quality_validated": false
+  },
+  "limitations": [
+    "Experimental Qwen3.5 decoder replacement without fine-tuning. The feature bridge and added region-token embeddings are untrained. Generated text and region selections are not validated object-detection or counting results."
+  ],
+  "inference_seconds": 357.167,
+  "image": "demo/demo_image.jpg",
+  "output_image": "outputs/cpu-acceptance.jpg",
+  "elapsed_seconds": 537.366
+}
