@@ -10,12 +10,13 @@ introduced — the region-token setup, the 2048->1024 bridge, the embedding
 splice at the image/region sentinels, and a real generate() call against
 Qwen3.5's architecture — without needing a GPU or the 6GB checkpoint.
 
-The token setup below mirrors builder._ensure_qwen35_fo1_tokens and
-builder._load_qwen35_language_model rather than importing them, because
-importing the builder drags in the whole vision stack; keep them in sync.
+The same project helpers as normal inference add region tokens and load the
+official Qwen3_5ForCausalLM text decoder from the multimodal checkpoint. The
+unused native Qwen vision tower is not allocated, and the loader rejects
+missing decoder weights.
 
-The decoded output is expected to be fluent but ungrounded: the bridge is
-untrained, so the region features reaching Qwen3.5 carry no real signal.
+This smoke check verifies execution, not answer quality: the bridge is
+untrained and the synthetic features contain no image information.
 """
 import os
 import sys
@@ -25,8 +26,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import torch.nn as nn
-from transformers import AutoTokenizer, AutoModelForImageTextToText
+from transformers import AutoTokenizer, Qwen3_5ForCausalLM
 
+from vlm_fo1.model.builder import _ensure_qwen35_fo1_tokens, _load_qwen35_language_model
 from vlm_fo1.model.language_model.qwen35_fo1_wrapper import Qwen35FO1InferenceWrapper
 from vlm_fo1.constants import IMAGE_TOKEN_INDEX, DEFAULT_REGION_INDEX
 
@@ -81,20 +83,13 @@ def main():
     print(f"Loading tokenizer from {model_id} ...")
     tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False, trust_remote_code=True)
 
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    added = tokenizer.add_tokens([f"<region{i}>" for i in range(100)], special_tokens=True)
+    added = _ensure_qwen35_fo1_tokens(tokenizer)
     print(f"Added {added} region tokens to tokenizer, vocab size now {len(tokenizer)}")
 
     print(f"Loading {model_id} weights on CPU ...")
-    language_model = AutoModelForImageTextToText.from_pretrained(
-        model_id,
-        trust_remote_code=True,
-        low_cpu_mem_usage=True,
-        torch_dtype=torch.float32,
-    )
-    if len(tokenizer) > language_model.get_input_embeddings().num_embeddings:
-        language_model.resize_token_embeddings(len(tokenizer))
+    language_model = _load_qwen35_language_model(model_id, tokenizer, device="cpu")
+    assert isinstance(language_model, Qwen3_5ForCausalLM)
+    assert not hasattr(language_model.model, "visual")
     assert len(tokenizer) <= language_model.get_input_embeddings().num_embeddings
     print("Language model loaded; embedding table covers the tokenizer.")
 
