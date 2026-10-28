@@ -186,7 +186,8 @@ def main():
     demo.queue(default_concurrency_limit=1).launch(
         server_name=os.environ.get("GRADIO_SERVER_NAME", "0.0.0.0"),
         server_port=int(os.environ.get("PORT", os.environ.get("GRADIO_SERVER_PORT", "8000"))),
-        share=False, debug=False,
+        # GRADIO_SHARE=1 prints a public gradio.live link (needed on Colab).
+        share=os.environ.get("GRADIO_SHARE", "0") == "1", debug=False,
     )
 
 

@@ -6,6 +6,12 @@ The original VLM-FO1 vision encoders and Hybrid Fine-grained Region Encoder (HFR
 
 Generation uses Transformers' official `Qwen3_5ForCausalLM` text decoder. Qwen3.5's native vision tower is omitted; the retained VLM-FO1 encoders and HFRE supply all visual features.
 
+## Run on Google Colab (no local GPU needed)
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Milan4321123/VLM/blob/qwen35-decoder-swap/notebooks/colab_demo.ipynb)
+
+Select *Runtime → Change runtime type → T4 GPU*, then *Run all*. The notebook installs the pinned dependencies, runs the offline tests, runs the full pipeline on the fruit example, and can start the web demo with a public link.
+
 ## Start on the receiving computer
 
 Install Docker Engine with Compose v2, or Docker Desktop, then extract this project and open a terminal **inside this directory**. The computer needs internet access for the initial image build and model download.
@@ -88,6 +94,7 @@ Standard output is one JSON document; diagnostics go to standard error. Results 
 | `VLM_FO1_DEVICE` | Set by Compose: `cpu` or `cuda` |
 | `VLM_FO1_ATTN_IMPL` | `sdpa`; no flash-attn installation required |
 | `VLM_FO1_PORT` | Host interface port, default `8000` |
+| `GRADIO_SHARE` | `0`; set to `1` for a public gradio.live link (Colab) |
 | `UPN_AUTO_DOWNLOAD` | `0`; set to `1` to allow a UPN download on demand |
 | `HF_TOKEN` | Optional Hugging Face token forwarded from the host shell |
 
