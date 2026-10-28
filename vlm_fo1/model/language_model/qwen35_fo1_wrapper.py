@@ -1,10 +1,26 @@
 import warnings
+import sys
+import time
 from typing import Optional
 
 import torch
 import torch.nn as nn
+from transformers import StoppingCriteria
 
 from vlm_fo1.constants import IMAGE_TOKEN_INDEX, DEFAULT_REGION_INDEX
+
+
+class _PromptAwareStoppingCriteria(StoppingCriteria):
+    """Keep callers' prompt-length based criteria valid with inputs_embeds."""
+
+    def __init__(self, criterion, prompt_ids):
+        self.criterion = criterion
+        self.prompt_ids = prompt_ids
+
+    def __call__(self, input_ids, scores, **kwargs):
+        repeats = input_ids.shape[0] // self.prompt_ids.shape[0]
+        prompt = self.prompt_ids.repeat_interleave(repeats, dim=0).to(input_ids.device)
+        return self.criterion(torch.cat([prompt, input_ids], dim=1), scores, **kwargs)
 
 
 class Qwen35FO1InferenceWrapper(nn.Module):
@@ -24,6 +40,7 @@ class Qwen35FO1InferenceWrapper(nn.Module):
         language_model: nn.Module,
         tokenizer,
         bridge_state_path: Optional[str] = None,
+        bridge_seed: int = 0,
     ):
         super().__init__()
         self.vision_backbone = vision_backbone
@@ -36,31 +53,42 @@ class Qwen35FO1InferenceWrapper(nn.Module):
 
         if self.vision_hidden_size == self.language_hidden_size:
             self.feature_bridge = nn.Identity()
-            self.bridge_is_trained = True
         else:
             # The FO1 projectors emit features sized for the decoder they were
             # trained with (2048 for Qwen2.5-VL); Qwen3.5-0.8B embeds text in
             # 1024 dims, so a projection is needed before the concat is even
             # shape-valid. Without a trained state this layer is random and the
             # answers will not be grounded — see the warning below.
-            self.feature_bridge = nn.Linear(self.vision_hidden_size, self.language_hidden_size, bias=False)
-            self.bridge_is_trained = False
+            # A fixed CPU seed makes the no-training experiment reproducible
+            # without changing the application's RNG state.
+            with torch.random.fork_rng(devices=[]):
+                torch.random.default_generator.manual_seed(bridge_seed)
+                self.feature_bridge = nn.Linear(self.vision_hidden_size, self.language_hidden_size, bias=False)
 
+        self.bridge_is_trained = False
         if bridge_state_path:
-            state = torch.load(bridge_state_path, map_location="cpu")
+            state = torch.load(bridge_state_path, map_location="cpu", weights_only=True)
             self.feature_bridge.load_state_dict(state)
-            self.bridge_is_trained = True
-        elif not self.bridge_is_trained:
+        else:
             warnings.warn(
-                "Qwen3.5 hidden size is different from the original VLM-FO1 "
-                "Qwen2.5-VL hidden size. A new 2048->1024 feature bridge was "
-                "initialized randomly. Inference is dimensionally valid, but "
-                "the bridge/projectors need retraining or a converted checkpoint "
-                "for reliable answers.",
+                "The FO1-to-Qwen3.5 feature alignment and added region tokens "
+                "are not trained. This inference-only migration checks execution; "
+                "its outputs do not establish reliable visual grounding.",
                 RuntimeWarning,
             )
 
         self.language_model_name_or_path = getattr(language_model.config, "_name_or_path", "Qwen/Qwen3.5-0.8B")
+        self.inference_status = {
+            "backend": "fo1_hfre_qwen35",
+            "fine_tuning_performed": False,
+            "bridge_seed": bridge_seed,
+            "bridge_state_loaded": bool(bridge_state_path),
+            "bridge_alignment": "external_state_unverified" if bridge_state_path else "untrained",
+            "region_token_alignment": "untrained",
+            "grounding_quality_validated": False,
+        }
+        self.requires_grad_(False)
+        self.eval()
 
     @staticmethod
     def _get_language_hidden_size(language_model: nn.Module) -> int:
@@ -92,8 +120,13 @@ class Qwen35FO1InferenceWrapper(nn.Module):
         return self.vision_backbone.get_vision_tower_aux()
 
     def _bridge_features(self, features: torch.Tensor) -> torch.Tensor:
+        if not torch.isfinite(features).all():
+            raise RuntimeError("The visual encoder produced non-finite features; inference cannot continue.")
         self.feature_bridge.to(device=self.device, dtype=self.dtype)
-        return self.feature_bridge(features.to(device=self.device, dtype=self.dtype))
+        projected = self.feature_bridge(features.to(device=self.device, dtype=self.dtype))
+        if not torch.isfinite(projected).all():
+            raise RuntimeError("The visual feature bridge produced non-finite embeddings; inference cannot continue.")
+        return projected
 
     def _embed_text(self, token_ids: torch.Tensor) -> torch.Tensor:
         token_ids = token_ids.to(self.device)
@@ -103,15 +136,20 @@ class Qwen35FO1InferenceWrapper(nn.Module):
         if images is None or len(images) == 0:
             return [], None
 
+        started = time.perf_counter()
+        print("[VLM-FO1] Analysing the image...", file=sys.stderr, flush=True)
         image_features, image_grid_thws_out, vt_multi_level_features = self.vision_backbone.encode_images(
             images,
             image_grid_thws,
         )
         image_features = [self._bridge_features(feature) for feature in image_features]
+        print(f"[VLM-FO1] Image features ready ({time.perf_counter() - started:.1f}s).", file=sys.stderr, flush=True)
 
         region_features = None
         vision_tower_aux = self.vision_backbone.get_vision_tower_aux()
         if vision_tower_aux is not None and images_aux is not None and bbox_list is not None and len(bbox_list) > 0:
+            started = time.perf_counter()
+            print("[VLM-FO1] Analysing the proposed regions...", file=sys.stderr, flush=True)
             images_aux_batch = [image_aux.unsqueeze(0) for image_aux in images_aux]
             patch_size = self.vision_backbone.get_vision_tower().config.patch_size
             grid_source = image_grid_thws if image_grid_thws is not None else image_grid_thws_out
@@ -123,6 +161,7 @@ class Qwen35FO1InferenceWrapper(nn.Module):
                 vt_images_size,
             )
             region_features = [self._bridge_features(feature) for feature in region_features]
+            print(f"[VLM-FO1] Region features ready ({time.perf_counter() - started:.1f}s).", file=sys.stderr, flush=True)
 
         return image_features, region_features
 
@@ -135,9 +174,13 @@ class Qwen35FO1InferenceWrapper(nn.Module):
         image_grid_thws=None,
         attention_mask=None,
     ):
+        if input_ids.ndim != 2 or input_ids.shape[0] == 0 or input_ids.shape[1] == 0:
+            raise ValueError("input_ids must be a non-empty [batch, tokens] tensor.")
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
         else:
+            if attention_mask.shape != input_ids.shape:
+                raise ValueError("attention_mask must have the same shape as input_ids.")
             attention_mask = attention_mask.bool()
 
         image_features, region_features = self._encode_visual_features(
@@ -152,6 +195,8 @@ class Qwen35FO1InferenceWrapper(nn.Module):
 
         for batch_idx, cur_input_ids in enumerate(input_ids):
             cur_input_ids = cur_input_ids[attention_mask[batch_idx].to(cur_input_ids.device)]
+            if cur_input_ids.numel() == 0:
+                raise ValueError("Each prompt must contain at least one unmasked token.")
             special_positions = torch.where(
                 (cur_input_ids == IMAGE_TOKEN_INDEX) | (cur_input_ids == DEFAULT_REGION_INDEX)
             )[0].tolist()
@@ -178,11 +223,16 @@ class Qwen35FO1InferenceWrapper(nn.Module):
                 elif special_token == DEFAULT_REGION_INDEX:
                     if region_features is None:
                         raise ValueError("Prompt contains <regionfeat> markers but no region features were prepared.")
+                    if batch_idx >= len(region_features) or cur_region_idx >= len(region_features[batch_idx]):
+                        raise ValueError("Prompt contains more <regionfeat> markers than prepared regions.")
                     feature = region_features[batch_idx][cur_region_idx].unsqueeze(0)
                     cur_region_idx += 1
                     cur_embeds.append(feature)
 
             prompt_embeds.append(torch.cat(cur_embeds, dim=0))
+
+        if cur_image_idx != len(image_features):
+            raise ValueError("Prepared images must have matching <image> markers in the prompt.")
 
         max_len = max(embed.shape[0] for embed in prompt_embeds)
         batch_size = len(prompt_embeds)
@@ -210,6 +260,7 @@ class Qwen35FO1InferenceWrapper(nn.Module):
 
         return torch.stack(padded_embeds, dim=0), padded_attention_mask
 
+    @torch.inference_mode()
     def generate(
         self,
         inputs=None,
@@ -249,32 +300,42 @@ class Qwen35FO1InferenceWrapper(nn.Module):
             attention_mask=attention_mask,
         )
 
-        # Keyword stopping criteria (as built by prepare_inputs) compare
-        # against prompt token ids, but generation here starts from
-        # inputs_embeds and never sees those ids; eos_token_id already covers
-        # stopping, so the criteria are dropped rather than passed through.
-        stopping_criteria = None
-
         generation_kwargs = dict(
             inputs_embeds=inputs_embeds,
             attention_mask=qwen_attention_mask,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
-            top_p=top_p,
             use_cache=use_cache,
             eos_token_id=eos_token_id,
             pad_token_id=pad_token_id,
             streamer=streamer,
         )
+        if stopping_criteria:
+            generation_kwargs["stopping_criteria"] = [
+                _PromptAwareStoppingCriteria(criterion, input_ids) for criterion in stopping_criteria
+            ]
         if do_sample:
+            if temperature <= 0:
+                raise ValueError("Sampling requires temperature > 0.")
             generation_kwargs["temperature"] = temperature
+            generation_kwargs["top_p"] = top_p
 
         generation_kwargs.update(kwargs)
-        generated_ids = self.language_model.generate(**generation_kwargs)
+        started = time.perf_counter()
+        print(f"[VLM-FO1] Generating a response (up to {max_new_tokens} tokens)...", file=sys.stderr, flush=True)
+        generated = self.language_model.generate(**generation_kwargs)
+        print(f"[VLM-FO1] Response ready ({time.perf_counter() - started:.1f}s).", file=sys.stderr, flush=True)
+        generated_ids = generated.sequences if hasattr(generated, "sequences") else generated
 
         # With inputs_embeds and no input_ids, generate() returns only the new
         # tokens. Callers slice the output by the prompt length
         # (output_ids[:, inputs.shape[1]:]), so prepend the original prompt
         # ids — not the longer internal visual sequence — to keep that
         # slicing correct.
-        return torch.cat([input_ids.to(generated_ids.device), generated_ids], dim=1)
+        repeats = generated_ids.shape[0] // input_ids.shape[0]
+        prompt_ids = input_ids.repeat_interleave(repeats, dim=0).to(generated_ids.device)
+        sequences = torch.cat([prompt_ids, generated_ids], dim=1)
+        if hasattr(generated, "sequences"):
+            generated.sequences = sequences
+            return generated
+        return sequences

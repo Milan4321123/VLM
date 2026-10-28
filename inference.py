@@ -1,104 +1,53 @@
+"""Backwards-compatible fruit-image example, using the shared Qwen3.5 CLI."""
 import argparse
 import json
+from pathlib import Path
 
-import torch
-from PIL import Image
-
-from vlm_fo1.model.builder import load_pretrained_model
-from vlm_fo1.mm_utils import (
-    prepare_inputs,
-    draw_bboxes_and_save,
-    extract_predictions_to_bboxes,
-)
-from vlm_fo1.task_templates import OD_template
+from cli import main as cli_main
+from vlm_fo1.runtime import DEFAULT_BBOXES, RuntimeConfig
 
 
-DEFAULT_BBOXES = [
-    [161.0, 11.0, 292.0, 127.0],
-    [268.0, 61.0, 428.0, 226.0],
-    [12.0, 100.0, 140.0, 227.0],
-    [205.0, 188.0, 332.0, 320.0],
-    [326.0, 202.0, 478.0, 357.0],
-    [136.0, 106.0, 269.0, 233.0],
-    [25.0, 206.0, 200.0, 383.0],
-]
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Run VLM-FO1 inference with provided bounding boxes.")
+def parse_args(argv=None):
+    defaults = RuntimeConfig.from_env()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default="demo/demo_image.jpg")
     parser.add_argument("--label", default="orange")
-    parser.add_argument("--bboxes-json", help="Optional JSON file containing [[x1, y1, x2, y2], ...].")
-    parser.add_argument("--model-path", default="omlab/VLM-FO1_Qwen2.5-VL-3B-v01")
-    parser.add_argument(
-        "--llm-model-path",
-        default="Qwen/Qwen3.5-0.8B",
-        help="Decoder used for generation. Pass '' to keep the checkpoint's own decoder.",
-    )
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--load-4bit", action="store_true", help="Reduce VRAM use; recommended for Colab T4.")
-    parser.add_argument("--max-new-tokens", type=int, default=256)
-    parser.add_argument("--output", default="demo/vlm_fo1_result.jpg")
-    return parser.parse_args()
+    parser.add_argument("--bboxes-json", help="JSON file containing manual boxes; bundled boxes fit only demo_image.jpg.")
+    parser.add_argument("--model-path", default=defaults.model_path)
+    parser.add_argument("--llm-model-path", default=defaults.llm_model_path or "", help="Decoder checkpoint; pass '' for original decoder.")
+    parser.add_argument("--device", default=defaults.device)
+    parser.add_argument("--load-4bit", action="store_true", default=defaults.load_4bit)
+    parser.add_argument("--load-8bit", action="store_true", default=defaults.load_8bit)
+    parser.add_argument("--max-new-tokens", type=int, default=defaults.max_tokens)
+    parser.add_argument("--seed", type=int, default=defaults.seed)
+    parser.add_argument("--output", default="outputs/vlm_fo1_result.jpg")
+    parser.add_argument("--json", dest="json_out")
+    parser.add_argument("--no-image", action="store_true")
+    return parser.parse_args(argv)
 
 
-def load_bboxes(path):
-    if path is None:
-        return DEFAULT_BBOXES
-    with open(path, "r", encoding="utf-8") as handle:
-        bboxes = json.load(handle)
-    if not isinstance(bboxes, list) or any(len(box) != 4 for box in bboxes):
-        raise ValueError("Bounding box JSON must contain [[x1, y1, x2, y2], ...].")
-    return bboxes
-
-
-def main():
-    args = parse_args()
-    if args.device.startswith("cuda") and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but no GPU is available. Enable a GPU runtime in Colab.")
-
-    bbox_list = load_bboxes(args.bboxes_json)
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": args.image}},
-                {"type": "text", "text": OD_template.format(args.label)},
-            ],
-            "bbox_list": bbox_list,
-        }
-    ]
-
-    tokenizer, model, image_processors = load_pretrained_model(
-        args.model_path,
-        load_4bit=args.load_4bit,
-        device=args.device,
-        llm_model_path=args.llm_model_path or None,
-    )
-    generation_kwargs = prepare_inputs(
-        args.model_path,
-        model,
-        image_processors,
-        tokenizer,
-        messages,
-        device=args.device,
-        max_tokens=args.max_new_tokens,
-        top_p=0.05,
-        temperature=0.0,
-        do_sample=False,
-    )
-
-    with torch.inference_mode():
-        output_ids = model.generate(**generation_kwargs)
-        outputs = tokenizer.decode(
-            output_ids[0, generation_kwargs["inputs"].shape[1]:]
-        ).strip()
-
-    print("Model output:", outputs)
-    bboxes = extract_predictions_to_bboxes(outputs, bbox_list)
-    image = Image.open(args.image).convert("RGB")
-    draw_bboxes_and_save(image=image, fo1_bboxes=bboxes, output_path=args.output)
+def main(argv=None):
+    args = parse_args(argv)
+    translated = ["--image", args.image, "--task", "od", "--target", args.label,
+                  "--model", args.model_path, "--llm-model-path", args.llm_model_path,
+                  "--device", args.device, "--max-tokens", str(args.max_new_tokens),
+                  "--seed", str(args.seed), "--output", args.output]
+    if args.bboxes_json:
+        translated.extend(["--boxes-file", args.bboxes_json])
+    else:
+        if Path(args.image).resolve() != (Path(__file__).parent / "demo/demo_image.jpg").resolve():
+            raise SystemExit("error: provide --bboxes-json for an image other than the bundled fruit example.")
+        translated.extend(["--boxes", json.dumps(DEFAULT_BBOXES)])
+    if args.load_4bit:
+        translated.append("--load-4bit")
+    if args.load_8bit:
+        translated.append("--load-8bit")
+    if args.json_out:
+        translated.extend(["--json", args.json_out])
+    if args.no_image:
+        translated.append("--no-image")
+    return cli_main(translated)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

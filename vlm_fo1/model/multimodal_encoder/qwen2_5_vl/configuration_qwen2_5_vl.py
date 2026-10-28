@@ -250,9 +250,18 @@ class Qwen2_5_VLConfig(PretrainedConfig):
             if self.rope_scaling["type"] == "mrope":
                 self.rope_scaling["type"] = "default"
             self.rope_scaling["rope_type"] = self.rope_scaling["type"]
-        rope_config_validation(self, ignore_keys={"mrope_section"})
-
+        kwargs.setdefault("ignore_keys_at_rope_validation", {"mrope_section"})
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
+        # These fields lived on PretrainedConfig in Transformers 4; the
+        # published FO1 checkpoint omits pad_token_id when it is None.
+        self.pad_token_id = getattr(self, "pad_token_id", None)
+        self.bos_token_id = getattr(self, "bos_token_id", None)
+        self.eos_token_id = getattr(self, "eos_token_id", None)
+        if hasattr(self, "standardize_rope_params"):
+            self.standardize_rope_params()
+            self.validate_rope(ignore_keys={"mrope_section"})
+        else:
+            rope_config_validation(self, ignore_keys={"mrope_section"})
 
 
 __all__ = ["Qwen2_5_VLConfig"]

@@ -1,20 +1,27 @@
-import gradio as gr
-from PIL import Image, ImageDraw, ImageFont
-import re
-import numpy as np
-from skimage.measure import label, regionprops
-from skimage.morphology import binary_dilation, disk
-from detect_tools.upn import UPNWrapper
-from vlm_fo1.model.builder import load_pretrained_model
-from vlm_fo1.mm_utils import (
-    prepare_inputs,
-    extract_predictions_to_indexes,
-)
-from vlm_fo1.task_templates import *
-import torch
+"""Browser demo with lazy model loading and manual proposals for CPU/GPU use."""
+from contextlib import redirect_stdout
+from dataclasses import replace
+import json
 import os
-from copy import deepcopy
+from pathlib import Path
+import sys
+import time
 
+# Also support `python demo/gradio_demo.py` from the repository checkout.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import gradio as gr
+from PIL import Image, ImageDraw
+
+from vlm_fo1.runtime import (
+    DEFAULT_BBOXES, DEFAULT_UPN_CKPT, EXPERIMENT_LIMITATION, RuntimeConfig,
+    get_proposals, get_runtime, parse_boxes, validate_boxes,
+)
+from vlm_fo1.task_templates import (
+    OD_template, OD_Counting_template, Viusal_Region_Reasoning_template,
+    OD_All_template, Grounding_template,
+)
 
 TASK_TYPES = {
     "OD/REC": OD_template,
@@ -26,356 +33,162 @@ TASK_TYPES = {
     "OD_All": OD_All_template,
     "Grounding": Grounding_template,
 }
-
 EXAMPLES = [
-    ["demo_image.jpg", TASK_TYPES["OD/REC"].format("orange, apple"), "OD/REC"],
-    ["demo_image_01.jpg", TASK_TYPES["ODCounting"].format("airplane with only one propeller"), "ODCounting"],
-    ["demo_image_02.jpg", TASK_TYPES["OD/REC"].format("the ball closest to the bear"), "OD/REC"],
-    ["demo_image_03.jpg", TASK_TYPES["OD_All"].format(""), "OD_All"],
-    ["demo_image_03.jpg", TASK_TYPES["Viusal_Region_Reasoning"].format("What's the brand of this computer?"), "Viusal_Region_Reasoning"],
+    ["demo_image.jpg", OD_template.format("orange, apple"), "OD/REC"],
+    ["demo_image_01.jpg", OD_Counting_template.format("airplane with only one propeller"), "ODCounting"],
+    ["demo_image_02.jpg", OD_template.format("the ball closest to the bear"), "OD/REC"],
+    ["demo_image_03.jpg", OD_All_template, "OD_All"],
 ]
+PROPOSAL_METHODS = ["Manual boxes", "Drawn regions", "Automatic UPN (CUDA)"]
 
 
 def get_valid_examples():
-    valid_examples = []
-    demo_dir = os.path.dirname(os.path.abspath(__file__))
-    for example in EXAMPLES:
-        img_path = example[0]
-        full_path = os.path.join(demo_dir, img_path)
-        if os.path.exists(full_path):
-            valid_examples.append([
-                full_path,
-                example[1], 
-                example[2]
-            ])
-        elif os.path.exists(img_path):
-            valid_examples.append([
-                img_path,
-                example[1], 
-                example[2]
-            ])
-    return valid_examples
-
-
-def detect_model(image, threshold=0.3):
-    proposals = upn_model.inference(image)
-    filtered_proposals = upn_model.filter(proposals, min_score=threshold)
-    return filtered_proposals['original_xyxy_boxes'][0][:100]
-
-
-def multimodal_model(image, bboxes, text):
-    if '<image>' in text:
-        print(text)
-        parts = [part.replace('\\n', '\n') for part in re.split(rf'(<image>)', text) if part.strip()]
-        print(parts)
-        content = []
-        for part in parts:
-            if part == '<image>':
-                content.append({"type": "image_url", "image_url": {"url": image}})
-            else:
-                content.append({"type": "text", "text": part})
-    else:
-        content = [{
-            "type": "image_url",
-            "image_url": {
-                "url": image
-            }
-            }, {
-                "type": "text",
-                "text": text
-            }]
-
-    messages = [
-        {
-            "role": "user",
-            "content": content,
-            "bbox_list": bboxes
-        }
-    ]
-    generation_kwargs = prepare_inputs(model_path, model, image_processors, tokenizer, messages,
-    max_tokens=4096, top_p=0.05, temperature=0.0, do_sample=False)
-    with torch.inference_mode():
-        output_ids = model.generate(**generation_kwargs)
-        outputs = tokenizer.decode(output_ids[0, generation_kwargs['inputs'].shape[1]:]).strip()
-        print("========output========\n", outputs)
-
-    if '<ground>' in outputs:
-        prediction_dict = extract_predictions_to_indexes(outputs)
-    else:
-        match_pattern = r"<region(\d+)>"
-        matches = re.findall(match_pattern, outputs)
-        prediction_dict = {f"<region{m}>": {int(m)} for m in matches}
-
-    ans_bbox_json = []
-    ans_bbox_list = []
-    for k, v in prediction_dict.items():
-        for box_index in v:
-            box_index = int(box_index)
-            if box_index < len(bboxes):
-                current_bbox = bboxes[box_index]
-                ans_bbox_json.append({
-                    "region_index": f"<region{box_index}>",
-                    "xmin": current_bbox[0],
-                    "ymin": current_bbox[1],
-                    "xmax": current_bbox[2],
-                    "ymax": current_bbox[3],
-                    "label": k
-                })
-                ans_bbox_list.append(current_bbox)
-
-    return outputs, ans_bbox_json, ans_bbox_list
+    return [[str(Path(__file__).parent / name), prompt, task] for name, prompt, task in EXAMPLES
+            if (Path(__file__).parent / name).is_file()]
 
 
 def draw_bboxes(image, bboxes, labels=None):
-    image = image.copy()
-    draw = ImageDraw.Draw(image)
-
-    for bbox in bboxes:
+    result = image.copy()
+    draw = ImageDraw.Draw(result)
+    for index, bbox in enumerate(bboxes):
         draw.rectangle(bbox, outline="red", width=3)
-    return image
+        draw.text((bbox[0] + 3, bbox[1] + 3), (labels or [])[index] if labels else f"region{index}", fill="red")
+    return result
 
 
 def extract_bbox_and_original_image(edited_image):
-    """Extract original image and bounding boxes from ImageEditor output"""
+    """Each connected brush mark is a proposal; the untouched background is the model input."""
     if edited_image is None:
         return None, []
-    
-    if isinstance(edited_image, dict):
-        original_image = edited_image.get("background")
-        bbox_list = []
-
-        if original_image is None:
-            return None, []
-
-        if edited_image.get("layers") is None or len(edited_image.get("layers", [])) == 0:
-            return original_image, []
-
-        try:
-            drawing_layer = edited_image["layers"][0]
-            alpha_channel = drawing_layer.getchannel('A')
-            alpha_np = np.array(alpha_channel)
-
-            binary_mask = alpha_np > 0
-
-            structuring_element = disk(5)
-            dilated_mask = binary_dilation(binary_mask, structuring_element)
-
-            labeled_image = label(dilated_mask)
-            regions = regionprops(labeled_image)
-
-            for prop in regions:
-                y_min, x_min, y_max, x_max = prop.bbox
-                bbox_list.append((x_min, y_min, x_max, y_max))
-        except Exception as e:
-            print(f"Error extracting bboxes from layers: {e}")
-            return original_image, []
-
-        return original_image, bbox_list
-    elif isinstance(edited_image, Image.Image):
+    if isinstance(edited_image, Image.Image):
         return edited_image, []
-    else:
-        print(f"Unknown input type: {type(edited_image)}")
+    if not isinstance(edited_image, dict):
+        raise ValueError("Upload an image using the editor.")
+    original = edited_image.get("background")
+    if original is None:
         return None, []
+    layers = edited_image.get("layers") or []
+    if not layers:
+        return original, []
+    import numpy as np
+    from skimage.measure import label, regionprops
+    from skimage.morphology import binary_dilation, disk
+    mask = np.zeros((original.height, original.width), dtype=bool)
+    for layer in layers:
+        if layer.mode == "RGBA":
+            mask |= np.asarray(layer.getchannel("A")) > 0
+    regions = regionprops(label(binary_dilation(mask, disk(5))))
+    return original, [[int(prop.bbox[1]), int(prop.bbox[0]), int(prop.bbox[3]), int(prop.bbox[2])]
+                      for prop in regions]
 
 
-def process(image, example_image, prompt, threshold):
-    image, bbox_list = extract_bbox_and_original_image(image)
+def detect_model(image, threshold=0.3):
+    return get_proposals(image, threshold, checkpoint=os.environ.get("UPN_CKPT", DEFAULT_UPN_CKPT))
 
-    if example_image is not None:
-        image = example_image
-    
-    if image is None:
-        error_msg = "Error: Please upload an image or select a valid example."
-        print(f"Error: image is None, original input type: {type(image)}")
-        return None, None, error_msg, []
-    
+
+def upload_defaults(value):
+    """Gradio also fires upload when it initializes the example image."""
+    image = value.get("background") if isinstance(value, dict) else value
+    if image is not None:
+        with Image.open(Path(__file__).parent / "demo_image.jpg") as fruit:
+            rgb = image.convert("RGB")
+            if rgb.size == fruit.size and rgb.tobytes() == fruit.convert("RGB").tobytes():
+                return None, json.dumps(DEFAULT_BBOXES), "Manual boxes"
+    return None, "", "Drawn regions"
+
+
+def process(image, example_image, prompt, threshold, manual_boxes="", proposal_method="Manual boxes"):
+    started = time.perf_counter()
     try:
-        image = image.convert('RGB')
-    except Exception as e:
-        error_msg = f"Error: Cannot process image - {str(e)}"
-        return None, None, error_msg, []
-
-    if len(bbox_list) == 0:
-        bboxes = detect_model(image, threshold)
-    else:
-        bboxes = bbox_list
-        for idx in range(len(bboxes)):
-            prompt += f'<region{idx}>'
-
-    ans, ans_bbox_json, ans_bbox_list = multimodal_model(image, bboxes, prompt)
-
-    image_with_detection = draw_bboxes(image, bboxes)
-
-    annotated_bboxes = []
-    if len(ans_bbox_json) > 0:
-        for item in ans_bbox_json:
-            annotated_bboxes.append(
-                ((int(item['xmin']), int(item['ymin']), int(item['xmax']), int(item['ymax'])), item['label'])
-            )
-    annotated_image = (image, annotated_bboxes)
-
-    return annotated_image, image_with_detection, ans, ans_bbox_json
-
-
-def update_btn(is_processing):
-    if is_processing:
-        return gr.update(value="Processing...", interactive=False)
-    else:
-        return gr.update(value="Submit", interactive=True)
+        if not prompt or not prompt.strip():
+            raise ValueError("Enter a prompt before submitting.")
+        # Validate pasted JSON before invoking any ML code.
+        boxes = parse_boxes(manual_boxes) if proposal_method == "Manual boxes" else None
+        if proposal_method == "Drawn regions":
+            image, drawn = extract_bbox_and_original_image(image)
+            boxes = validate_boxes(drawn)
+        elif isinstance(image, dict):
+            image = image.get("background")
+        if image is None:
+            image = example_image
+        if image is None:
+            raise ValueError("Upload an image or load an example.")
+        image = image.convert("RGB")
+        source = "upn" if proposal_method == "Automatic UPN (CUDA)" else "user"
+        with redirect_stdout(sys.stderr):
+            boxes = detect_model(image, threshold) if source == "upn" else validate_boxes(boxes, image.size)
+            if proposal_method == "Drawn regions":
+                prompt += "".join(f"<region{i}>" for i in range(len(boxes)))
+            result = get_runtime(RuntimeConfig.from_env()).predict(image, boxes, prompt, source)
+        result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+        result["proposal_method"] = proposal_method
+        annotations = [(tuple(int(v) for v in item["bbox"]), item["label"]) for item in result["detections"]]
+        return (image, annotations), draw_bboxes(image, boxes), result["raw_output"], result
+    except Exception as exc:
+        raise gr.Error(str(exc)) from exc
 
 
-def launch_demo():
-    with gr.Blocks() as demo:
-        gr.Markdown("# 🚀 VLM-FO1 Demo")
-        gr.Markdown("""
-        ### 📋 Instructions
-        
-        **Step 1: Prepare Your Image**
-        - Upload an image using the image editor below
-        - *Optional:* Draw circular regions with the red brush to specify areas of interest
-        - *Alternative:* If not drawing regions, the detection model will automatically identify regions
-        
-        **Step 2: Configure Your Task**
-        - Select a task template from the dropdown menu
-        - Replace `[WRITE YOUR INPUT HERE]` with your target objects or query
-        - *Example:* For detecting "person" and "dog", replace with: `person, dog`
-        - *Or:* Write your own custom prompt
-        
-        **Step 3: Fine-tune Detection** *(Optional)*
-        - Adjust the detection threshold slider to control sensitivity
-        
-        **Step 4: Generate Results**
-        - Click the **Submit** button to process your request
-        - View the detection results and model outputs below
-        
-        🔗 [GitHub Repository](https://github.com/om-ai-lab/VLM-FO1)
-        """)
-        
+def create_demo():
+    """Construct the UI without model imports, downloads, or GPU allocation."""
+    config = RuntimeConfig.from_env().validate()
+    examples = get_valid_examples()
+    initial = examples[0][0] if examples else None
+    with gr.Blocks(title="VLM-FO1 · Qwen3.5 experiment") as demo:
+        gr.Markdown("# VLM-FO1 · Qwen3.5")
+        gr.Markdown(f"**No-fine-tuning experiment.** {EXPERIMENT_LIMITATION}\n\n"
+                    "Upload an image, paste boxes in pixel coordinates or draw separate regions, "
+                    "and enter a prompt. Manual boxes and drawn regions work on CPU. "
+                    "Automatic UPN proposals require NVIDIA CUDA. The bundled fruit example includes manual boxes.\n\n"
+                    "The first submission downloads and loads the pretrained checkpoints; this can take several minutes. "
+                    "Later submissions reuse the loaded model. A machine with sufficient RAM/disk is required.")
+        gr.Markdown(f"**Configured decoder:** `{config.llm_model_path or config.model_path}` · "
+                    f"**Device:** `{config.device}` · **Token limit:** `{config.max_tokens}` · **Seed:** `{config.seed}`")
         with gr.Row():
             with gr.Column():
-                img_input_draw = gr.ImageEditor(
-                    label="Image Input",
-                    image_mode="RGBA",
-                    type="pil",
-                    sources=['upload'],
-                    brush=gr.Brush(colors=["#FF0000"], color_mode="fixed", default_size=2),
-                    interactive=True
+                image_editor = gr.ImageEditor(
+                    value=initial, label="Input image / draw separate regions", image_mode="RGBA", type="pil",
+                    sources=["upload"], brush=gr.Brush(colors=["#FF0000"], color_mode="fixed", default_size=3),
                 )
-
-                gr.Markdown("### Prompt & Parameters")
-
-                def set_prompt_from_template(selected_task):
-                    return gr.update(value=TASK_TYPES[selected_task].format("[WRITE YOUR INPUT HERE]"))
-                
-                def load_example(prompt_input, task_type_input, hidden_image_box):
-                    cached_image = deepcopy(hidden_image_box)
-                    w, h = cached_image.size
-    
-                    transparent_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-
-                    new_editor_value = {
-                        "background": cached_image,
-                        "layers": [transparent_layer],
-                        "composite": None
-                    }
-                    
-                    return new_editor_value, prompt_input, task_type_input
-                
-                def reset_hidden_image_box():
-                    return gr.update(value=None)
-
-                task_type_input = gr.Dropdown(
-                    choices=list(TASK_TYPES.keys()),
-                    value="OD/REC",
-                    label="Prompt Templates",
-                    info="Select the prompt template for the task, or write your own prompt."
+                proposal_method = gr.Radio(PROPOSAL_METHODS, value="Manual boxes", label="Proposal source")
+                boxes_input = gr.Textbox(
+                    value=json.dumps(DEFAULT_BBOXES) if initial else "", lines=4,
+                    label="Manual boxes: [[x1,y1,x2,y2], ...]", info="1–100 boxes within the image. These defaults fit the fruit example only.",
                 )
-
-                prompt_input = gr.Textbox(
-                    label="Task Prompt", 
-                    value=TASK_TYPES["OD/REC"].format("[WRITE YOUR INPUT HERE]"),
-                    lines=2,
-                )
-
-                task_type_input.select(
-                    set_prompt_from_template,
-                    inputs=task_type_input,
-                    outputs=prompt_input
-                )
-
-                hidden_image_box = gr.Image(label="Image", type="pil", image_mode="RGBA", visible=False)
-
-                threshold_input = gr.Slider(minimum=0.0, maximum=1.0, value=0.3, step=0.01, label="Detection Model Threshold")
-                submit_btn = gr.Button("Submit", variant="primary")
-                
-                valid_examples = get_valid_examples()
-                if len(valid_examples) > 0:
-                    gr.Markdown("### Examples")
-                    gr.Markdown("Click on the examples below to quickly load images and corresponding prompts:")
-                    
-                    examples_data = [[example[0], example[1], example[2]] for index, example in enumerate(valid_examples)]
-                    
-                    examples = gr.Examples(
-                        examples=examples_data,
-                        inputs=[hidden_image_box, prompt_input, task_type_input],
-                        label="Click to load example",
-                        examples_per_page=5
-                    )
-                    
-                    examples.load_input_event.then(
-                        fn=load_example,
-                        inputs=[prompt_input, task_type_input, hidden_image_box], 
-                        outputs=[img_input_draw, prompt_input, task_type_input]
-                    )
-
-                    img_input_draw.upload(
-                        fn=reset_hidden_image_box,
-                        outputs=[hidden_image_box]
-                    )
-
+                template = gr.Dropdown(list(TASK_TYPES), value="OD/REC", label="Prompt template")
+                prompt = gr.Textbox(value=OD_template.format("orange"), lines=3, label="Prompt")
+                template.change(lambda selected: TASK_TYPES[selected].format("[WRITE YOUR INPUT HERE]"), template, prompt)
+                threshold = gr.Slider(0, 1, value=0.3, step=0.01, label="UPN score threshold (automatic proposals only)")
+                submit = gr.Button("Run inference", variant="primary")
+                hidden_image = gr.Image(type="pil", image_mode="RGBA", visible=False)
+                if examples:
+                    gallery = gr.Examples(examples=examples, inputs=[hidden_image, prompt, template], label="Load an example")
+                    def load_example(example, text, task):
+                        fruit = task == "OD/REC" and text == OD_template.format("orange, apple")
+                        return (example, json.dumps(DEFAULT_BBOXES) if fruit else "", "Manual boxes" if fruit else "Drawn regions")
+                    gallery.load_input_event.then(load_example, [hidden_image, prompt, template], [image_editor, boxes_input, proposal_method])
+                image_editor.upload(upload_defaults, inputs=[image_editor], outputs=[hidden_image, boxes_input, proposal_method])
             with gr.Column():
-                with gr.Accordion("Detection Result", open=True):
-                    image_with_detection = gr.Image(label="Detection Result", height=200)
-
-                image_output = gr.AnnotatedImage(label="VLM-FO1 Result", height=400)
-
-                result_output = gr.Textbox(label="VLM-FO1 Output", lines=5)
-                ans_bbox_json = gr.JSON(label="Extracted Detection Output")
-
-        submit_btn.click(
-            update_btn, 
-            inputs=[gr.State(True)], 
-            outputs=[submit_btn], 
-            queue=False
-        ).then(
-            process,
-            inputs=[img_input_draw, hidden_image_box, prompt_input, threshold_input],
-            outputs=[image_output, image_with_detection, result_output, ans_bbox_json],
-            queue=True
-        ).then(
-            update_btn, 
-            inputs=[gr.State(False)], 
-            outputs=[submit_btn], 
-            queue=False
-        )
-    
+                proposals_image = gr.Image(label="Input proposals (red labels are region indexes)", height=300)
+                result_image = gr.AnnotatedImage(label="Model-selected regions (experimental)", height=400)
+                raw_output = gr.Textbox(label="Raw model output", lines=6)
+                result_json = gr.JSON(label="Result and run metadata")
+        submit.click(process, [image_editor, hidden_image, prompt, threshold, boxes_input, proposal_method],
+                     [result_image, proposals_image, raw_output, result_json], concurrency_limit=1)
     return demo
 
-if __name__ == "__main__":
-    # Local checkpoint under ./resources if present, otherwise the Hugging Face Hub id.
-    # Override with VLM_FO1_MODEL / UPN_CKPT / PORT (used by the Docker image).
-    local_model_dir = './resources/VLM-FO1_Qwen2.5-VL-3B-v01'
-    model_path = os.environ.get(
-        "VLM_FO1_MODEL",
-        local_model_dir if os.path.isdir(local_model_dir) else 'omlab/VLM-FO1_Qwen2.5-VL-3B-v01',
-    )
-    upn_ckpt_path = os.environ.get("UPN_CKPT", "./resources/upn_large.pth")
-    server_port = int(os.environ.get("PORT", "8000"))
-    tokenizer, model, image_processors = load_pretrained_model(
-        model_path=model_path,
-        device="cuda:0",
-    )
-    upn_model = UPNWrapper(upn_ckpt_path)
 
-    demo = launch_demo()
-    demo.launch(server_name="0.0.0.0", share=False, server_port=server_port, debug=False)
+# Existing callers used launch_demo() to construct the Blocks object.
+launch_demo = create_demo
+
+
+def main():
+    demo = create_demo()
+    demo.queue(default_concurrency_limit=1).launch(
+        server_name=os.environ.get("GRADIO_SERVER_NAME", "0.0.0.0"),
+        server_port=int(os.environ.get("PORT", os.environ.get("GRADIO_SERVER_PORT", "8000"))),
+        share=False, debug=False,
+    )
+
+
+if __name__ == "__main__":
+    main()

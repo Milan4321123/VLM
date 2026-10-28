@@ -370,7 +370,8 @@ class DaViT(nn.Module):
         assert self.num_stages == len(self.num_heads) == len(self.num_groups)
 
         num_stages = len(embed_dims)
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths)*2)]
+        # Python hyperparameters must stay on CPU during meta-device loading.
+        dpr = torch.linspace(0, drop_path_rate, sum(depths)*2, device="cpu").tolist()
 
         depth_offset = 0
         convs = []

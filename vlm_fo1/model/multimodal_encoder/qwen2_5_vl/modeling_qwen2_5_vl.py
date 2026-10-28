@@ -34,6 +34,7 @@ import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
 
 from transformers.activations import ACT2FN
+from transformers import initialization as init
 from transformers.cache_utils import Cache, DynamicCache, StaticCache
 try:
     from transformers.cache_utils import SlidingWindowCache
@@ -123,6 +124,8 @@ class Qwen2_5_VisionPatchEmbed(nn.Module):
 class Qwen2_5_VisionRotaryEmbedding(nn.Module):
     def __init__(self, dim: int, theta: float = 10000.0) -> None:
         super().__init__()
+        self.dim = dim
+        self.theta = theta
         inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=torch.float) / dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
@@ -399,15 +402,27 @@ class Qwen2_5_VLPreTrainedModel(PreTrainedModel):
     _supports_static_cache = False  # TODO (joao): fix. torch.compile failing probably due to `cache_positions`
 
     def _init_weights(self, module):
-        std = self.config.initializer_range
+        std = getattr(self.config, "initializer_range", 0.02)
         if isinstance(module, (nn.Linear, nn.Conv3d)):
-            module.weight.data.normal_(mean=0.0, std=std)
+            init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
-                module.bias.data.zero_()
+                init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=std)
-            if module.padding_idx is not None:
-                module.weight.data[module.padding_idx].zero_()
+            init.normal_(module.weight, mean=0.0, std=std)
+            if module.padding_idx is not None and not getattr(module.weight, "_is_hf_initialized", False):
+                init.zeros_(module.weight[module.padding_idx])
+        elif isinstance(module, Qwen2_5_VisionRotaryEmbedding):
+            # Transformers 5 materializes non-persistent buffers with empty_like
+            # after meta loading. They are absent from checkpoint weights, so
+            # constructor initialization alone leaves arbitrary rotary values.
+            inv_freq = 1.0 / (module.theta ** (
+                torch.arange(0, module.dim, 2, dtype=torch.float32, device=module.inv_freq.device) / module.dim
+            ))
+            init.copy_(module.inv_freq, inv_freq)
+        elif isinstance(module, Qwen2_5_VLRotaryEmbedding):
+            inv_freq, module.attention_scaling = module.rope_init_fn(module.config, module.inv_freq.device)
+            init.copy_(module.inv_freq, inv_freq)
+            init.copy_(module.original_inv_freq, inv_freq)
 
 
 class Qwen2_5_VisionTransformerPretrainedModel(Qwen2_5_VLPreTrainedModel):
@@ -573,6 +588,16 @@ class Qwen2_5_VisionTransformerPretrainedModel(Qwen2_5_VLPreTrainedModel):
 
 
 class Qwen2_5_VLRotaryEmbedding(nn.Module):
+    @staticmethod
+    def _default_rope(config, device=None, **kwargs):
+        # Transformers 5 moved default RoPE out of ROPE_INIT_FUNCTIONS.
+        # Keep the original checkpoint's full-head rotary frequencies.
+        dim = config.hidden_size // config.num_attention_heads
+        inv_freq = 1.0 / (config.rope_theta ** (
+            torch.arange(0, dim, 2, dtype=torch.float32, device=device) / dim
+        ))
+        return inv_freq, 1.0
+
     def __init__(self, config: Qwen2_5_VLConfig, device=None):
         super().__init__()
         # BC: "rope_type" was originally "type"
@@ -584,11 +609,11 @@ class Qwen2_5_VLRotaryEmbedding(nn.Module):
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = config
-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+        self.rope_init_fn = self._default_rope if self.rope_type == "default" else ROPE_INIT_FUNCTIONS[self.rope_type]
 
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.original_inv_freq = self.inv_freq
+        self.register_buffer("original_inv_freq", inv_freq.clone(), persistent=False)
 
     def _dynamic_frequency_update(self, position_ids, device):
         """
@@ -599,7 +624,7 @@ class Qwen2_5_VLRotaryEmbedding(nn.Module):
         seq_len = torch.max(position_ids) + 1
         if seq_len > self.max_seq_len_cached:  # growth
             inv_freq, self.attention_scaling = self.rope_init_fn(
-                self.config, device, seq_len=seq_len, **self.rope_kwargs
+                self.config, device, seq_len=seq_len
             )
             self.register_buffer("inv_freq", inv_freq, persistent=False)  # TODO joao: may break with compilation
             self.max_seq_len_cached = seq_len
@@ -1519,7 +1544,7 @@ QWEN2_5_VL_INPUTS_DOCSTRING = r"""
 
 
 class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMixin):
-    _tied_weights_keys = ["lm_head.weight"]
+    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
     config_class = Qwen2_5_VLConfig
     _no_split_modules = ["Qwen2_5_VLDecoderLayer", "Qwen2_5_VLVisionBlock"]
 

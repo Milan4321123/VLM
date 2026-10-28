@@ -1,193 +1,148 @@
-"""Command-line inference for VLM-FO1 with a free-form prompt.
+"""Run the experimental VLM-FO1 + Qwen3.5 decoder without fine-tuning.
 
-Object proposals come from UPN unless you pass your own boxes with --boxes.
+CPU/Mac example (manual pixel-coordinate proposals):
+    python cli.py --image demo/demo_image.jpg --task od --target orange \
+        --boxes '[[161,11,292,127],[268,61,428,226]]' --device cpu
 
-Examples (run from the repository root, or inside the Docker image):
-
-    python cli.py --image demo/demo_image.jpg \
-        --prompt "Please detect orange in this image. Answer the question with object indexes."
-
-    python cli.py --image demo/demo_image_01.jpg \
-        --task count --target "airplane with only one propeller"
-
-    python cli.py --image demo/demo_image.jpg --task od --target "orange" \
-        --boxes '[[161,11,292,127],[268,61,428,226]]'
-
-The raw model answer and the boxes it selected are printed as JSON; the annotated
-image is written to --output (default: outputs/<image name>_result.jpg).
+Dependency/device check, without downloading weights:
+    python cli.py --check
 """
 import argparse
+from contextlib import redirect_stdout
 import json
+import math
 import os
-import re
+from pathlib import Path
 import sys
+import time
 
-DEFAULT_MODEL = "omlab/VLM-FO1_Qwen2.5-VL-3B-v01"
-LOCAL_MODEL_DIR = "./resources/VLM-FO1_Qwen2.5-VL-3B-v01"
-DEFAULT_UPN_CKPT = "./resources/upn_large.pth"
+from vlm_fo1.runtime import (
+    DEFAULT_DECODER, DEFAULT_UPN_CKPT, RuntimeConfig,
+    default_model_path, get_proposals as _get_proposals, get_runtime,
+    load_input_image, parse_boxes, preflight, validate_boxes,
+)
 
-# task name -> (template attribute in vlm_fo1.task_templates, needs --target)
 TASKS = {
-    "od": ("OD_template", True),
-    "count": ("OD_Counting_template", True),
-    "ocr": ("Region_OCR_template", True),
-    "brief-caption": ("Brief_Region_Caption_template", True),
+    "od": ("OD_template", True), "count": ("OD_Counting_template", True),
+    "ocr": ("Region_OCR_template", True), "brief-caption": ("Brief_Region_Caption_template", True),
     "detailed-caption": ("Detailed_Region_Caption_template", True),
     "reason": ("Viusal_Region_Reasoning_template", True),
-    "grounding": ("Grounding_template", False),
-    "all": ("OD_All_template", False),
+    "grounding": ("Grounding_template", False), "all": ("OD_All_template", False),
 }
 
 
-def default_model_path():
-    env = os.environ.get("VLM_FO1_MODEL")
-    if env:
-        return env
-    return LOCAL_MODEL_DIR if os.path.isdir(LOCAL_MODEL_DIR) else DEFAULT_MODEL
-
-
 def build_parser():
-    p = argparse.ArgumentParser(
-        description="Run VLM-FO1 on one image with your own prompt.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    p.add_argument("--image", required=True, help="Path or URL of the input image.")
-    g = p.add_mutually_exclusive_group(required=True)
-    g.add_argument("--prompt", help="Exact prompt sent to the model (used verbatim).")
-    g.add_argument("--task", choices=sorted(TASKS), help="Build the prompt from a task template.")
-    p.add_argument("--target", help="Text inserted into the task template (objects to find, question, ...).")
-    p.add_argument("--boxes", help="JSON list of [x1, y1, x2, y2] boxes to use instead of UPN proposals.")
-    p.add_argument("--region-tokens", action="store_true",
-                   help="Append one <regionN> token per box to the prompt (what the Gradio demo does for hand-drawn regions).")
-    p.add_argument("--threshold", type=float, default=0.3, help="Minimum UPN proposal score (default 0.3).")
-    p.add_argument("--max-proposals", type=int, default=100, help="Keep at most this many UPN proposals (default 100).")
-    p.add_argument("--model", default=default_model_path(),
-                   help="VLM-FO1 checkpoint: Hugging Face id or local path (env VLM_FO1_MODEL).")
-    p.add_argument("--upn-ckpt", default=os.environ.get("UPN_CKPT", DEFAULT_UPN_CKPT),
-                   help="UPN checkpoint path (env UPN_CKPT).")
-    p.add_argument("--device", default="cuda", help="Device for VLM-FO1 (default cuda).")
-    p.add_argument("--max-tokens", type=int, default=4096)
-    p.add_argument("--output", help="Where to save the annotated image (default outputs/<name>_result.jpg).")
-    p.add_argument("--json", dest="json_out", help="Also write the JSON result to this file.")
-    p.add_argument("--no-image", action="store_true", help="Do not write the annotated image.")
-    return p
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--check", action="store_true", help="Check installed imports and device; no weights downloaded.")
+    parser.add_argument("--image", help="Local image path or HTTP(S) URL.")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--prompt", help="Exact prompt sent to the model.")
+    group.add_argument("--task", choices=sorted(TASKS), help="Build a prompt from a task template.")
+    parser.add_argument("--target", help="Target objects or question for the task template.")
+    boxes = parser.add_mutually_exclusive_group()
+    boxes.add_argument("--boxes", help="JSON list of 1–100 [x1,y1,x2,y2] pixel-coordinate boxes; bypasses UPN.")
+    boxes.add_argument("--boxes-file", help="JSON file containing manual boxes; bypasses UPN.")
+    parser.add_argument("--region-tokens", action="store_true", help="Append one <regionN> per box to the prompt.")
+    parser.add_argument("--threshold", type=float, default=0.3, help="Minimum UPN proposal score (default 0.3).")
+    parser.add_argument("--max-proposals", type=int, default=100, help="Maximum UPN proposals, 1–100.")
+    parser.add_argument("--model", "--model-path", default=default_model_path(), help="Pretrained VLM-FO1 vision checkpoint.")
+    decoder = parser.add_mutually_exclusive_group()
+    decoder.add_argument("--llm-model-path", default=os.environ.get("VLM_FO1_LLM_MODEL", DEFAULT_DECODER),
+                         help="Generation decoder (default Qwen/Qwen3.5-0.8B).")
+    decoder.add_argument("--original-decoder", action="store_true", help="Use the original checkpoint decoder as a baseline.")
+    parser.add_argument("--upn-ckpt", default=os.environ.get("UPN_CKPT", DEFAULT_UPN_CKPT))
+    parser.add_argument("--device", default=os.environ.get("VLM_FO1_DEVICE", "auto"), help="auto (CUDA if available, otherwise CPU), cpu, cuda[:N], or mps.")
+    quantization = parser.add_mutually_exclusive_group()
+    quantization.add_argument("--load-4bit", action="store_true", default=os.environ.get("VLM_FO1_LOAD_4BIT", "0") == "1", help="CUDA only; requires bitsandbytes.")
+    quantization.add_argument("--load-8bit", action="store_true", default=os.environ.get("VLM_FO1_LOAD_8BIT", "0") == "1", help="CUDA only; requires bitsandbytes.")
+    parser.add_argument("--max-tokens", "--max-new-tokens", type=int, default=int(os.environ.get("VLM_FO1_MAX_TOKENS", "256")))
+    parser.add_argument("--seed", type=int, default=int(os.environ.get("VLM_FO1_SEED", "0")), help="Initialization and inference seed (default 0).")
+    parser.add_argument("--output", help="Annotated image path (default outputs/<name>_result.jpg).")
+    parser.add_argument("--json", dest="json_out", help="Also save the JSON result to this path.")
+    parser.add_argument("--no-image", action="store_true", help="Do not save an annotated image.")
+    return parser
 
 
 def make_prompt(args):
     if args.prompt is not None:
+        if not args.prompt.strip():
+            raise ValueError("--prompt must not be empty.")
         return args.prompt
+    if not args.task:
+        raise ValueError("Provide --prompt or --task for inference.")
     from vlm_fo1 import task_templates
     attr, needs_target = TASKS[args.task]
-    template = getattr(task_templates, attr)
-    if needs_target and not args.target:
-        sys.exit(f"error: --task {args.task} needs --target")
-    return template.format(args.target or "")
-
-
-def parse_boxes(text):
-    boxes = json.loads(text)
-    if not isinstance(boxes, list) or any(len(b) != 4 for b in boxes):
-        sys.exit("error: --boxes must be a JSON list of [x1, y1, x2, y2] lists")
-    return [[float(v) for v in b] for b in boxes]
+    if needs_target and not (args.target and args.target.strip()):
+        raise ValueError(f"--task {args.task} needs --target.")
+    return getattr(task_templates, attr).format(args.target or "")
 
 
 def get_proposals(image, args):
-    from detect_tools.upn import UPNWrapper
-    if not os.path.isfile(args.upn_ckpt):
-        sys.exit(f"error: UPN checkpoint not found at {args.upn_ckpt} "
-                 "(download it from https://github.com/IDEA-Research/ChatRex/releases/download/upn-large/upn_large.pth "
-                 "or pass --boxes)")
-    upn = UPNWrapper(args.upn_ckpt)
-    proposals = upn.filter(upn.inference(image), min_score=args.threshold)
-    return [[float(v) for v in box] for box in proposals["original_xyxy_boxes"][0][: args.max_proposals]]
+    return _get_proposals(image, args.threshold, args.max_proposals, args.upn_ckpt)
 
 
-def parse_answer(outputs, bboxes):
-    """Map the model answer back to boxes. Returns (label -> indexes, detections list)."""
-    from vlm_fo1.mm_utils import extract_predictions_to_indexes
-    if "<ground>" in outputs:
-        label_to_indexes = extract_predictions_to_indexes(outputs)
-    else:
-        found = re.findall(r"<region(\d+)>", outputs)
-        label_to_indexes = {f"<region{m}>": {int(m)} for m in found}
-    detections = []
-    for label, indexes in label_to_indexes.items():
-        for idx in sorted(indexes):
-            if idx < len(bboxes):
-                detections.append({"label": label, "region_index": idx, "bbox": bboxes[idx]})
-    return detections
-
-
-def main():
-    args = build_parser().parse_args()
-    prompt = make_prompt(args)
-
-    import torch
-    from vlm_fo1.mm_utils import draw_bboxes_and_save, load_image, prepare_inputs
-    from vlm_fo1.model.builder import load_pretrained_model
-
-    image = load_image(args.image)
-
-    if args.boxes:
-        bboxes = parse_boxes(args.boxes)
-        source = "user"
-    else:
-        bboxes = get_proposals(image, args)
-        source = "upn"
-    if not bboxes:
-        sys.exit("error: no object proposals; lower --threshold or pass --boxes")
-
-    if args.region_tokens:
-        prompt = prompt + "".join(f"<region{i}>" for i in range(len(bboxes)))
-
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "image_url", "image_url": {"url": image}},
-            {"type": "text", "text": prompt},
-        ],
-        "bbox_list": bboxes,
-    }]
-
-    tokenizer, model, image_processors = load_pretrained_model(args.model, device=args.device)
-    generation_kwargs = prepare_inputs(
-        args.model, model, image_processors, tokenizer, messages, device=args.device,
-        max_tokens=args.max_tokens, top_p=0.05, temperature=0.0, do_sample=False,
-    )
-    with torch.inference_mode():
-        output_ids = model.generate(**generation_kwargs)
-        outputs = tokenizer.decode(output_ids[0, generation_kwargs["inputs"].shape[1]:]).strip()
-
-    detections = parse_answer(outputs, bboxes)
-    result = {
-        "image": args.image,
-        "prompt": prompt,
-        "proposal_source": source,
-        "num_proposals": len(bboxes),
-        "raw_output": outputs,
-        "detections": detections,
-    }
-
-    if not args.no_image:
-        output = args.output
-        if not output:
-            stem = os.path.splitext(os.path.basename(args.image.rstrip("/")))[0] or "image"
-            output = os.path.join("outputs", f"{stem}_result.jpg")
-        os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-        label_to_boxes = {}
-        for d in detections:
-            label_to_boxes.setdefault(d["label"], []).append(d["bbox"])
-        draw_bboxes_and_save(image=image.copy(), fo1_bboxes=label_to_boxes, output_path=output)
-        result["output_image"] = output
-
-    text = json.dumps(result, indent=2, ensure_ascii=False)
-    if args.json_out:
-        os.makedirs(os.path.dirname(args.json_out) or ".", exist_ok=True)
-        with open(args.json_out, "w") as f:
-            f.write(text)
+def _write_json(result, destination):
+    text = json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False)
+    if destination:
+        path = Path(destination)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text + "\n", encoding="utf-8")
     print(text)
 
 
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        config = RuntimeConfig(
+            model_path=args.model,
+            llm_model_path=None if args.original_decoder else (args.llm_model_path or None),
+            device=args.device, load_4bit=args.load_4bit, load_8bit=args.load_8bit,
+            max_tokens=args.max_tokens, seed=args.seed,
+        ).validate()
+        if args.check:
+            with redirect_stdout(sys.stderr):
+                result = preflight(config)
+            _write_json(result, args.json_out)
+            return 0
+        if not args.image:
+            raise ValueError("--image is required for inference.")
+        prompt = make_prompt(args)
+        if not math.isfinite(args.threshold) or not 0 <= args.threshold <= 1:
+            raise ValueError("--threshold must be between 0 and 1.")
+        if not 1 <= args.max_proposals <= 100:
+            raise ValueError("--max-proposals must be between 1 and 100.")
+        # Reject malformed data before expensive imports, requests, or model loading.
+        boxes = None
+        if args.boxes is not None:
+            boxes = parse_boxes(args.boxes)
+        elif args.boxes_file:
+            boxes = parse_boxes(Path(args.boxes_file).read_text(encoding="utf-8"))
+        started = time.perf_counter()
+        with redirect_stdout(sys.stderr):
+            image = load_input_image(args.image)
+            source = "user" if boxes is not None else "upn"
+            boxes = validate_boxes(boxes, image.size) if boxes is not None else get_proposals(image, args)
+            if args.region_tokens:
+                prompt += "".join(f"<region{i}>" for i in range(len(boxes)))
+            result = get_runtime(config).predict(image, boxes, prompt, source)
+            result["image"] = args.image
+            if not args.no_image:
+                from vlm_fo1.mm_utils import draw_bboxes_and_save
+                output = args.output or str(Path("outputs") / (Path(args.image).stem + "_result.jpg"))
+                Path(output).parent.mkdir(parents=True, exist_ok=True)
+                labels = {}
+                for detection in result["detections"]:
+                    labels.setdefault(detection["label"], []).append(detection["bbox"])
+                draw_bboxes_and_save(image=image.copy(), fo1_bboxes=labels, output_path=output)
+                result["output_image"] = output
+            result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+        _write_json(result, args.json_out)
+        return 0
+    except (ValueError, OSError, ImportError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

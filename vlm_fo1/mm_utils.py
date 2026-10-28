@@ -191,7 +191,9 @@ class KeywordsStoppingCriteria(StoppingCriteria):
         """
         Checks if a keyword exists in the latest generated output ids for a single batch element.
         """
-        offset = min(output_ids.shape[1] - self.start_len, self.max_keyword_len)
+        offset = min(max(0, output_ids.shape[1] - self.start_len), self.max_keyword_len)
+        if offset == 0:
+            return False
         self.keyword_ids = [keyword_id.to(output_ids.device) for keyword_id in self.keyword_ids]
         for keyword_id in self.keyword_ids:
             truncated_output_ids = output_ids[0, -keyword_id.shape[0]:]
@@ -216,13 +218,14 @@ def load_image(image_file):
     """
     Loads an image from a local path, base64 string, URL, or PIL.Image.
 
-    If the input image is smaller than 28x28, it will be resized to at least that size.
+    Preserve the original dimensions so images and bounding boxes can be
+    resized together by resize_shortest_edge_images_and_bboxes.
 
     Args:
         image_file (str or PIL.Image.Image): Image source.
 
     Returns:
-        PIL.Image.Image: Loaded image in RGB mode, at least 28x28 in size.
+        PIL.Image.Image: Loaded image in RGB mode at its original size.
     """
     if isinstance(image_file, Image.Image):
         image = image_file.convert("RGB")
@@ -241,9 +244,6 @@ def load_image(image_file):
     else:
         raise ValueError(f"Unsupported image type: {type(image_file)}")
     
-    # Ensure minimum size 28x28
-    if image.width < 28 or image.height < 28:
-        image = image.resize((max(28, image.width), max(28, image.height)))
     return image
 
 def image_to_base64(img_pil):
@@ -305,12 +305,8 @@ def draw_bboxes_and_save(
             draw.rectangle(shape, outline=color, width=width)
             draw.text((bbox[0], bbox[1]), bbox_label, fill=color)
 
-    # Save output image (catching common IO exceptions).
-    try:
-        image.save(output_path)
-        print(f"The image has been successfully saved to: {output_path}")
-    except IOError as e:
-        print(f"Error: failed to save the image to {output_path}. Reason: {e}")
+    # Propagate write failures so callers cannot claim an artifact was saved.
+    image.save(output_path)
 
 def adjust_bbox(bbox_list, original_h, original_w, resize_h, resize_w):
     """
@@ -405,166 +401,75 @@ def extract_predictions_to_indexes(prediction: str):
 def resize_shortest_edge_images_and_bboxes(
     image_list: List[Image.Image],
     bbox_lists: List,
-    candidate_sizes: List[int] = [], 
-    max_size: int = 2048
-    ):
-    """
-    Randomly selects a size for the shortest edge, and proportionally resizes both images and bounding boxes.
-
-    The function maintains the image aspect ratio and ensures that the resized dimensions do not exceed the specified max_size.
-    Bounding boxes are transformed accordingly.
-
-    Args:
-        image_list (List[Image.Image]): A list of PIL Image objects.
-        bbox_lists (List[List[List[float]]]): A list of lists of bounding boxes per image.
-        candidate_sizes (List[int]): Optional list of sizes to choose the target short edge from.
-        max_size (int): Maximum allowed long edge after resizing.
-
-    Returns:
-        Tuple[List[Image.Image], List[List[List[float]]]]:
-            ([resized_image1, ...], [bbox_list1, ...]) - Possibly shape will match original (see below)
-
-    Raises:
-        ValueError: on input list length mismatch or emptiness.
-    """
-    bbox_tensor = torch.tensor(bbox_lists)
-    # Normalize input: wrap bbox_lists into list-of-list, if needed.
-    if len(bbox_tensor.shape) == 2 and bbox_tensor.shape[1] == 4:
-        bbox_lists = [bbox_lists]
-
-    if not image_list or not bbox_lists:
-        raise ValueError("Input lists cannot be empty.")
-    if len(image_list) != len(bbox_lists):
-        raise ValueError("The lengths of the image list and the bounding box list must be the same.")
-
-    # Randomly select short edge size (if given candidate sizes)
-    if len(candidate_sizes) > 0:
-        target_size = random.choice(candidate_sizes)
+    candidate_sizes=None,
+    max_size: int = 2048,
+):
+    """Resize images and boxes together; a single image may have zero boxes."""
+    if not image_list:
+        raise ValueError("At least one image is required.")
+    flat_input = len(image_list) == 1 and (
+        not bbox_lists or (bbox_lists[0] and isinstance(bbox_lists[0][0], (int, float)))
+    )
+    if bbox_lists is None or len(bbox_lists) == 0:
+        normalized_boxes = [[] for _ in image_list]
+    elif flat_input:
+        normalized_boxes = [bbox_lists]
     else:
-        target_size = None
+        normalized_boxes = bbox_lists
+    if len(image_list) != len(normalized_boxes):
+        raise ValueError("Each image must have its own bounding box list.")
+    target_size = random.choice(candidate_sizes) if candidate_sizes else None
+    resized_images, transformed = [], []
+    for img, boxes in zip(image_list, normalized_boxes):
+        width, height = img.size
+        scale = target_size / min(width, height) if target_size else 1.0
+        scale = min(scale, max_size / max(width, height))
+        new_width, new_height = max(28, int(width * scale)), max(28, int(height * scale))
+        resized_images.append(img.resize((new_width, new_height), Image.Resampling.BICUBIC))
+        transformed.append([
+            [x1 * new_width / width, y1 * new_height / height,
+             x2 * new_width / width, y2 * new_height / height]
+            for x1, y1, x2, y2 in boxes
+        ])
+    return resized_images, transformed[0] if flat_input else transformed
 
-    resized_images = []
-    transformed_bbox_lists = []
 
-    # Process each image and its corresponding bbox list
-    for img, bboxes in zip(image_list, bbox_lists):
-        original_width, original_height = img.size
-
-        # Determine scaling factor to bring short edge to target_size
-        shortest_side = min(original_width, original_height)
-        if target_size:
-            scale = target_size / shortest_side
-        else:
-            scale = 1.0
-
-        # Propose new height and width with this scale
-        new_height, new_width = int(original_height * scale), int(original_width * scale)
-
-        # If resulting long edge exceeds max_size, rescale down so that it fits.
-        longest_side = max(new_height, new_width)
-        if longest_side > max_size:
-            scale = max_size / longest_side
-            new_height, new_width = int(new_height * scale), int(new_width * scale)
-        # Ensure images are at least 28x28 (model may expect it)
-        new_width = max(28, new_width)
-        new_height = max(28, new_height)
-
-        # Resize image, using BICUBIC for quality if shape changes
-        if new_width == original_width and new_height == original_height:
-            resized_img = img
-        else:
-            resized_img = img.resize((new_width, new_height), Image.Resampling.BICUBIC)
-        resized_images.append(resized_img)
-
-        # Transform bounding boxes
-        current_transformed_bboxes = []
-        scale_ratio_x = new_width / original_width
-        scale_ratio_y = new_height / original_height
-        for bbox in bboxes:
-            x1, y1, x2, y2 = bbox
-            new_x1 = x1 * scale_ratio_x
-            new_y1 = y1 * scale_ratio_y
-            new_x2 = x2 * scale_ratio_x
-            new_y2 = y2 * scale_ratio_y
-            current_transformed_bboxes.append([new_x1, new_y1, new_x2, new_y2])
-        transformed_bbox_lists.append(current_transformed_bboxes)
-
-    # If original input was a single image (not list), unpack.
-    if len(bbox_tensor.shape) == 2 and bbox_tensor.shape[1] == 4:
-        return resized_images, transformed_bbox_lists[0]
-    else:
-        return resized_images, transformed_bbox_lists
-
-def make_message_context(tokenizer, message, chat_format="chatml"):
-    """
-    Given a message dict, construct the prompt, tokenized context tokens, image URLs, and bbox_list.
-
-    Handles both standard string 'content' and multi-part (list) content, appropriately placing image/region tokens.
-
-    Args:
-        tokenizer: tokenizer object
-        message (dict): Contains role, content, and optionally bbox_list.
-        chat_format (str): Optionally select chat format (default 'chatml').
-
-    Returns:
-        tuple: (inp, context_tokens, image_urls, bbox_list)
-    """
+def make_message_context(tokenizer, message, chat_format="chatml", vision_tokens=None):
+    """Build one chat turn while retaining image and region sentinels."""
+    if chat_format != "chatml":
+        raise ValueError("Only chatml is supported.")
+    role = message.get("role")
+    if role not in {"system", "user", "assistant"}:
+        raise ValueError("Message role must be system, user or assistant.")
+    content = message["content"]
+    boxes = message.get("bbox_list")
     image_urls = []
-    if chat_format == "chatml":
-        im_start, im_end = "<|im_start|>", "<|im_end|>"
-        # The ids behind these marker strings are vocabulary-specific
-        # (151644/151645 happen to be Qwen2.5-VL's), so look them up in
-        # whichever tokenizer is active instead of hardcoding them.
-        im_start_tokens = _special_token_ids(tokenizer, im_start)
-        im_end_tokens = _special_token_ids(tokenizer, im_end)
-        nl_tokens = _encode_text(tokenizer, "\n")
-        role = message["role"]
-        content = message["content"]
-        bbox_list = message.get("bbox_list", None)
+    start, end = vision_tokens or (DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN)
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        chunks = []
+        for part in content:
+            if part["type"] == "text":
+                chunks.append(part["text"])
+            elif part["type"] == "image_url":
+                chunks.append(start + "<image>" + end + "\n")
+                image_urls.append(part["image_url"]["url"])
+                if boxes:
+                    chunks.append("".join(
+                        DEFAULT_REGION_TOKEN.replace("<i>", str(i)) + DEFAULT_REGION_FEATURE_TOKEN
+                        for i in range(len(boxes))
+                    ) + "\n")
+            else:
+                raise ValueError(f"Unsupported content type: {part['type']}")
+        text = "".join(chunks)
+    else:
+        raise ValueError("Message content must be text or a list of text/image parts.")
+    prompt = f"<|im_start|>{role}\n{text}<|im_end|>\n"
+    ids = tokenizer_image_region_token(prompt, tokenizer) if boxes else tokenizer_image_token(prompt, tokenizer)
+    return prompt, ids, image_urls, boxes
 
-        if role == "system":
-            inp = f"{im_start}{role}\n{content}{im_end}\n"
-            context_tokens = tokenizer.encode(
-                role, allowed_special=set(), add_special_tokens=False) + nl_tokens + tokenizer.encode(content, allowed_special=set(), add_special_tokens=False)
-            context_tokens = im_start_tokens + context_tokens + im_end_tokens
-
-        if role == "user":
-            if isinstance(content, str):
-                # Plain string message
-                inp = f"{im_start}{role}\n{content}{im_end}\n"
-                context_tokens = tokenizer.encode(
-                    role, allowed_special=set(), add_special_tokens=False) + nl_tokens + tokenizer.encode(content,
-                                                                                allowed_special=set(), add_special_tokens=False)
-                context_tokens = im_start_tokens + context_tokens + im_end_tokens
-            if isinstance(content, list):
-                # Multi-part message (text and image_url parts, maybe region tokens)
-                inp = f"{im_start}{role}\n"
-                image_count = 1
-                for message_part in content:
-                    if message_part["type"] == "text":
-                        inp += f"{message_part['text']}"
-
-                    if message_part["type"] == "image_url":
-                        # Insert special vision/image tokens, possibly region tokens
-                        inp += DEFAULT_IM_START_TOKEN + '<image>' + DEFAULT_IM_END_TOKEN + '\n'
-                        # If regions exist, add per-region special token.
-                        if bbox_list and len(bbox_list) > 0:
-                            for idx, bbox in enumerate(bbox_list):
-                                inp += DEFAULT_REGION_TOKEN.replace('<i>', str(idx)) + DEFAULT_REGION_FEATURE_TOKEN
-                            inp += '\n'
-
-                        image_urls.append(message_part['image_url']['url'])
-                        image_count += 1
-                inp += f"{im_end}\n"
-
-                # Choose tokenizer logic based on whether bbox (region) list exists
-                if bbox_list and len(bbox_list) > 0:
-                    context_tokens = tokenizer_image_region_token(inp, tokenizer)
-                else:
-                    context_tokens = tokenizer_image_token(inp, tokenizer, image_token_index=IMAGE_TOKEN_INDEX)
-        return inp, context_tokens, image_urls, bbox_list
-
-def prepare_inputs(model_name, model, image_processors, tokenizer, messages, device="cuda", max_tokens=512, top_p=1.0, temperature=0.0, do_sample=False, image_size=None, enable_thinking=False):
+def prepare_inputs(model_name, model, image_processors, tokenizer, messages, device="cuda", max_tokens=512, top_p=1.0, temperature=0.0, do_sample=False, image_size=None, enable_thinking=False, stream=True, verbose=True):
     """
     Fully prepares keyword arguments for model.generate (and compatible API) from messages and model specs.
 
@@ -583,11 +488,11 @@ def prepare_inputs(model_name, model, image_processors, tokenizer, messages, dev
     Returns:
         dict: ready-to-use argument dict for model.generate().
     """
-    # For Qwen2.5-VL, patch vision special tokens globally.
-    if 'qwen2.5-vl' in model_name.lower() or 'qwen2_5_vl' in model_name.lower():
-        global DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-        DEFAULT_IM_START_TOKEN = "<|vision_start|>"
-        DEFAULT_IM_END_TOKEN = "<|vision_end|>"
+    if not messages:
+        raise ValueError("At least one message is required.")
+    vision_tokens = None
+    if "qwen" in model_name.lower() or "qwen" in getattr(model.config, "model_type", ""):
+        vision_tokens = ("<|vision_start|>", "<|vision_end|>")
 
     primary_image_processor, auxiliary_image_processor = image_processors
 
@@ -597,12 +502,22 @@ def prepare_inputs(model_name, model, image_processors, tokenizer, messages, dev
     bbox_list = None
     # Compose prompt and accumulate all components from provided messages
     for message in messages:
-        inp, context_tokens, image_urls, bbox_list = make_message_context(tokenizer, message)
+        boxes = message.get("bbox_list")
+        if boxes and len(boxes) > getattr(model.config, "mm_num_region_tokens", 100):
+            raise ValueError("The FO1 checkpoint supports at most 100 proposal regions per image.")
+        inp, context_tokens, message_images, message_boxes = make_message_context(
+            tokenizer, message, vision_tokens=vision_tokens
+        )
+        if message_images:
+            image_urls.extend(message_images)
+            bbox_list = message_boxes
         prompt += inp
         input_tokens.extend(context_tokens)
+    if len(image_urls) > 1:
+        raise ValueError("This inference entry point supports one image per request.")
 
     # Ensure a system prompt at start, if not already present.
-    if "system" not in prompt:
+    if not any(message.get("role") == "system" for message in messages):
         system_content = "system\nYou are a helpful assistant."
         system_prompt = "<|im_start|>" + system_content + "<|im_end|>" + "\n"
         prompt = system_prompt + prompt
@@ -643,12 +558,11 @@ def prepare_inputs(model_name, model, image_processors, tokenizer, messages, dev
 
             if bbox_list and len(bbox_list) > 0:
                 # Limit number of bbox (for computational constraints, etc.)
-                bbox_list = bbox_list[:100]
                 resize_h, resize_w = auxiliary_images_tensor[0].shape[-2:]
                 original_w, original_h = origin_image_size[0]
                 # Adjust bbox to match resized images (post pre-processing)
                 bbox_list = adjust_bbox(bbox_list, original_h, original_w, resize_h, resize_w)
-                bbox_list = [torch.tensor(bbox_list)]
+                bbox_list = [torch.tensor(bbox_list, dtype=torch.float32, device=device)]
             else:
                 bbox_list = None
         else:
@@ -677,7 +591,7 @@ def prepare_inputs(model_name, model, image_processors, tokenizer, messages, dev
     stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, input_ids) if keywords else None
     streamer = TextStreamer(
         tokenizer, skip_prompt=True, skip_special_tokens=True
-    )
+    ) if stream else None
 
     # Default: greedy decoding if temperature=0. Else: enable sampling.
     if temperature == 0.0:
@@ -685,7 +599,8 @@ def prepare_inputs(model_name, model, image_processors, tokenizer, messages, dev
     else:
         do_sample = True
 
-    print("question:================\n", prompt, "\n=================")
+    if verbose:
+        print("question:================\n", prompt, "\n=================")
     # print("input ids:========", input_ids, "========")
     generation_kwargs = dict(
         inputs=input_ids,

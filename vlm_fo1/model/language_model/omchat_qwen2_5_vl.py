@@ -1,9 +1,13 @@
 from typing import List, Optional, Tuple, Union
+from copy import deepcopy
 
 import torch
 import torch.nn as nn
 
-from transformers import Qwen2_5_VLConfig, AutoConfig, AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM
+# The checkpoint and vendored model use the flat Transformers 4 configuration.
+# Transformers 5's public Qwen2.5 config nests the decoder under text_config.
+from vlm_fo1.model.multimodal_encoder.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
 from vlm_fo1.model.multimodal_encoder.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLModel, Qwen2_5_VLForConditionalGeneration, Qwen2_5_VLCausalLMOutputWithPast
 from vlm_fo1.model.multimodal_encoder.qwen2_5_vl_encoder import Qwen2_5_VlVisionTower
 from vlm_fo1.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, DEFAULT_REGION_INDEX, QWEN2_5_VL_IMAGE_TOKEN, QWEN2_5_VL_IMAGE_TOKEN_INDEX
@@ -27,15 +31,35 @@ class OmChatQwen25VLModel(OmChatMetaModel, Qwen2_5_VLModel):
 # Main class for multimodal CausalLM
 class OmChatQwen25VLForCausalLM(Qwen2_5_VLForConditionalGeneration, OmChatMetaForCausalLM):
     config_class = OmChatQwen25VLConfig
+    # The discarded decoder keys are expected when loading vision_only=True.
+    _keys_to_ignore_on_load_unexpected = [
+        r"^model\.layers\.", r"^model\.embed_tokens\.",
+        r"^model\.norm\.", r"^lm_head\.",
+    ]
 
-    def __init__(self, config, delay_load=True):
+    def __init__(self, config, delay_load=True, vision_only=False):
         # Ensure config has delay_load property
         if not hasattr(config, 'delay_load'):
             config.delay_load = delay_load
         super(Qwen2_5_VLForConditionalGeneration, self).__init__(config)
-        self.model = OmChatQwen25VLModel(config)
+        backbone_config = config
+        if vision_only:
+            # Keep the original visual dimensions, but avoid allocating/loading
+            # a 3B text decoder that the Qwen3.5 path never calls.
+            backbone_config = deepcopy(config)
+            backbone_config.num_hidden_layers = 0
+            backbone_config.vocab_size = 1
+            backbone_config.pad_token_id = None
+            backbone_config.tie_word_embeddings = False
+            self._tied_weights_keys = {}
+        self.model = OmChatQwen25VLModel(backbone_config)
         self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        if vision_only:
+            self.model.embed_tokens = nn.Identity()
+            self.model.norm = nn.Identity()
+            self.lm_head = nn.Identity()
+        else:
+            self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.rope_deltas = None  # cache rope_deltas here
 
         self.post_init()
@@ -141,14 +165,28 @@ class OmChatQwen25VLForCausalLM(Qwen2_5_VLForConditionalGeneration, OmChatMetaFo
         vision_tower_aux = self.get_vision_tower_aux()
         # Fast-path for non-multimodal case or first step in generation (i.e. only one token in input)
         if (vision_tower is None and video_tower is None) or images is None or input_ids.shape[1] == 1:
+            cache_position = None
             if past_key_values is not None and (vision_tower is not None or video_tower is not None) and images is not None and input_ids.shape[1] == 1:
 
-                target_shape = past_key_values[-1][-1].shape[-2] + 1
-                attention_mask = torch.cat((attention_mask, torch.ones(
-                    (attention_mask.shape[0], target_shape - attention_mask.shape[1]),
-                    dtype=attention_mask.dtype,
-                    device=attention_mask.device
-                )), dim=1)
+                # Transformers 5 caches expose their length through Cache;
+                # DynamicCache no longer supports tuple indexing. The cache
+                # length includes the expanded visual patches, while the
+                # generation loop's mask still counts the single image marker.
+                if hasattr(past_key_values, "get_seq_length"):
+                    cached_length = past_key_values.get_seq_length()
+                else:
+                    cached_length = past_key_values[-1][-1].shape[-2]
+                target_shape = cached_length + input_ids.shape[1]
+                if attention_mask is None:
+                    attention_mask = torch.ones(
+                        (input_ids.shape[0], target_shape), dtype=torch.long, device=input_ids.device,
+                    )
+                elif attention_mask.shape[1] < target_shape:
+                    attention_mask = torch.cat((attention_mask, torch.ones(
+                        (attention_mask.shape[0], target_shape - attention_mask.shape[1]),
+                        dtype=attention_mask.dtype,
+                        device=attention_mask.device
+                    )), dim=1)
 
                 position_ids=None
                 cache_position = torch.tensor([target_shape - 1],device=attention_mask.device)
@@ -488,6 +526,7 @@ class OmChatQwen25VLForCausalLM(Qwen2_5_VLForConditionalGeneration, OmChatMetaFo
         image_grid_thws: Optional[torch.FloatTensor] = None,
     ) -> Union[Tuple, Qwen2_5_VLCausalLMOutputWithPast]:
         
+        supplied_cache_position = cache_position
         if inputs_embeds is None:
             (
                 input_ids,
@@ -509,6 +548,10 @@ class OmChatQwen25VLForCausalLM(Qwen2_5_VLForConditionalGeneration, OmChatMetaFo
                 bbox_list,
                 image_grid_thws
             )
+        if cache_position is None:
+            # Text-only requests take the preparation fast path. Retain the
+            # generation loop's positions so later tokens do not restart at 0.
+            cache_position = supplied_cache_position
         
         if rope_deltas is not None:
             self.rope_deltas = rope_deltas
@@ -559,6 +602,8 @@ class OmChatQwen25VLForCausalLM(Qwen2_5_VLForConditionalGeneration, OmChatMetaFo
             attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
             cache_position=cache_position,
+            position_ids=position_ids,
+            use_cache=use_cache,
             pixel_values=pixel_values,
             pixel_values_videos=pixel_values_videos,
             image_grid_thw=image_grid_thw,
@@ -568,6 +613,7 @@ class OmChatQwen25VLForCausalLM(Qwen2_5_VLForConditionalGeneration, OmChatMetaFo
             images_aux=images_aux,
             bbox_list=bbox_list,
             image_grid_thws=image_grid_thws,
+            **kwargs,
         )   
         return model_inputs
     
