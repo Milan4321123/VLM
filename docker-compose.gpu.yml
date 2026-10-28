@@ -1,0 +1,18 @@
+# Optional Linux NVIDIA mode; requires the NVIDIA Container Toolkit on the host.
+services:
+  vlm-fo1:
+    build:
+      target: gpu
+      args:
+        TORCH_CUDA_ARCH_LIST: ${TORCH_CUDA_ARCH_LIST:-7.0;7.5;8.0;8.6;8.9;9.0+PTX}
+        MAX_JOBS: ${MAX_JOBS:-2}
+    image: vlm-fo1:gpu
+    environment:
+      VLM_FO1_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,32 +1,28 @@
+# Portable CPU mode. Supply/draw boxes; UPN requires the optional NVIDIA image.
+# NVIDIA: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 services:
   vlm-fo1:
     build:
       context: .
-      # Trim to your GPU to speed up the build, e.g. "8.6" for RTX 30xx, "8.9" for RTX 40xx / L4, "9.0" for H100.
-      args:
-        TORCH_CUDA_ARCH_LIST: "7.0;7.5;8.0;8.6;8.9;9.0+PTX"
-    image: vlm-fo1:latest
+      target: cpu
+    image: vlm-fo1:cpu
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${VLM_FO1_PORT:-8000}:8000"
     environment:
-      # Hub id or a path inside the container (mount local weights under ./resources).
-      - VLM_FO1_MODEL=${VLM_FO1_MODEL:-omlab/VLM-FO1_Qwen2.5-VL-3B-v01}
-      - UPN_CKPT=/app/resources/upn_large.pth
-      # Forwarded from your shell only when set.
-      - HF_TOKEN
-      - VLM_FO1_ATTN_IMPL
+      VLM_FO1_MODEL: ${VLM_FO1_MODEL:-omlab/VLM-FO1_Qwen2.5-VL-3B-v01}
+      VLM_FO1_LLM_MODEL: ${VLM_FO1_LLM_MODEL:-Qwen/Qwen3.5-0.8B}
+      VLM_FO1_DEVICE: cpu
+      VLM_FO1_ATTN_IMPL: ${VLM_FO1_ATTN_IMPL:-sdpa}
+      UPN_CKPT: /app/resources/upn_large.pth
+      UPN_AUTO_DOWNLOAD: ${UPN_AUTO_DOWNLOAD:-0}
+      # Forward the token only if it exists in the host environment.
+      HF_TOKEN:
     volumes:
       - ./resources:/app/resources
       - ./outputs:/app/outputs
       - hf-cache:/root/.cache/huggingface
     shm_size: "2gb"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    init: true
 
 volumes:
   hf-cache:

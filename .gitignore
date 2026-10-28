@@ -26,6 +26,8 @@ MANIFEST
 
 # Environment
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/
@@ -37,5 +39,17 @@ ENV/
 # Model weights and inference outputs
 resources/
 outputs/
+output/
 *.pth
 *.safetensors
+*.bin
+*.ckpt
+
+# Local caches, logs and verification artifacts
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+tmp/
+archive/

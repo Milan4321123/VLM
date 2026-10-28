@@ -1,20 +1,43 @@
 .git
 .gitignore
 .dockerignore
-Dockerfile
-docker-compose.yml
+.codex
+.agents
+.DS_Store
+**/.DS_Store
+.venv
+**/.venv
+venv
+env
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
 **/__pycache__
-**/*.pyc
-**/*.pyo
+**/*.py[cod]
 **/*.egg-info
-# Weights and outputs are mounted at run time, never baked into the image.
+.pytest_cache
+.mypy_cache
+.ruff_cache
+build/
+dist/
+*.patch
+*.log
+# Weights, caches and results remain outside the image.
 resources/
 outputs/
+.cache/
 *.pth
 *.safetensors
 *.bin
 *.ckpt
-# SAM3 is not installed in the image, so its video examples are not needed.
-demo/sam3_video_examples/
-# Unreferenced prebuilt extension; the op is compiled during the build.
-detect_tools/upn/_C.cpython-310-x86_64-linux-gnu.so
+*.zip
+*.tar
+*.tar.gz
+# Local backups are not part of the application.
+archive/
+# Compile native extensions for the target architecture instead of copying one.
+**/*.so
+tmp/
+output/
